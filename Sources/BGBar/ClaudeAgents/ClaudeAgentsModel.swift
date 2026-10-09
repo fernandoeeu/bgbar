@@ -75,11 +75,26 @@ final class ClaudeAgentsStore: ObservableObject {
                 while !Task.isCancelled {
                     let round = await mirror.sync()
                     await self?.setRemote(host, round.sessions)
-                    if !round.backlog { try? await Task.sleep(for: .seconds(4)) }
+                    if !round.backlog { await self?.nap() }
                 }
             }
         }
         publish()
+    }
+
+    static let mirrorInterval: TimeInterval = 4
+    static let idleMirrorInterval: TimeInterval = 30
+    /// Popover aberto (ver `Monitor.setVisible`).
+    var visible = false
+
+    /// Espera entre rodadas do espelho: curta com o popover aberto, longa fechado. Dorme em
+    /// fatias para a abertura do popover encurtar a espera.
+    private func nap() async {
+        var waited: TimeInterval = 0
+        repeat {
+            try? await Task.sleep(for: .seconds(Self.mirrorInterval))
+            waited += Self.mirrorInterval
+        } while !Task.isCancelled && !visible && waited < Self.idleMirrorInterval
     }
 
     private func setRemote(_ host: String, _ sessions: [ClaudeSession]) {
@@ -96,7 +111,7 @@ final class ClaudeAgentsStore: ObservableObject {
     func stop() { engine.stop() }
 }
 
-/// Parte fora da main thread: fila serial, FSEvents em ~/.claude/projects e polling de 2 s.
+/// Parte fora da main thread: fila serial, FSEvents em ~/.claude/projects e polling de 10 s.
 final class ClaudeAgentsEngine: @unchecked Sendable {
     private let queue = DispatchQueue(label: "bgbar.claude-agents", qos: .utility)
     private let scanner: ClaudeAgentsScanner
@@ -145,16 +160,16 @@ final class ClaudeAgentsEngine: @unchecked Sendable {
     }
 
     /// Agrupa rajadas de eventos (o jsonl recebe várias escritas por segundo).
-    private func scheduleScan(after delay: TimeInterval = 0.25) {
+    private func scheduleScan(after delay: TimeInterval = 1) {
         guard running, !scanScheduled else { return }
         scanScheduled = true
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in self?.scanNow() }
     }
 
     private func startTimer() {
-        // Polling de 2 s: fallback do FSEvents e avanço dos estados por tempo (limiar de 90 s).
+        // Polling de 10 s: fallback do FSEvents e avanço dos estados por tempo (limiar de 90 s).
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 2, repeating: 2, leeway: .milliseconds(250))
+        t.schedule(deadline: .now() + 10, repeating: 10, leeway: .seconds(1))
         t.setEventHandler { [weak self] in self?.scheduleScan(after: 0) }
         t.resume()
         timer = t

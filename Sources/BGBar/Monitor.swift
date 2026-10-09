@@ -44,6 +44,9 @@ final class Monitor {
         didSet { UserDefaults.standard.set(pinnedMeta, forKey: "pinnedMeta") }
     }
 
+    /// Popover aberto. Fechado, só o ícone da barra e as notificações de queda dependem da
+    /// coleta, então os ciclos desaceleram (`idle…`); ao abrir, recomeçam coletando já.
+    private(set) var visible = false
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var remoteLoops: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var previous: [String: Item] = [:]
@@ -68,16 +71,31 @@ final class Monitor {
 
     // MARK: Ciclo
 
-    func start(interval: TimeInterval = 2.5) {
+    static let interval: TimeInterval = 2.5
+    static let idleInterval: TimeInterval = 15
+
+    func start() {
         guard loop == nil else { return }
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
-                try? await Task.sleep(for: .seconds(interval))
+                let visible = self?.visible ?? false
+                try? await Task.sleep(for: .seconds(visible ? Self.interval : Self.idleInterval))
             }
         }
         hosts.forEach(pollRemote)
         ClaudeAgentsStore.shared.setHosts(hosts)
+    }
+
+    /// Chamado pela UI quando o popover abre ou fecha.
+    func setVisible(_ visible: Bool) {
+        guard visible != self.visible else { return }
+        self.visible = visible
+        ClaudeAgentsStore.shared.visible = visible
+        guard visible else { return } // ao fechar, cada ciclo pega a cadência lenta na próxima espera
+        loop?.cancel()
+        loop = nil
+        start()
     }
 
     /// Pede uma rodada já. Se uma estiver em andamento (com dados possivelmente
@@ -166,6 +184,10 @@ final class Monitor {
     }
 
     static let remoteInterval: TimeInterval = 5
+    static let idleRemoteInterval: TimeInterval = 30
+    /// `docker stats` segura a rodada por 1–2 s e pesa no host: só 1 a cada N rodadas,
+    /// como na coleta local.
+    static let remoteStatsEvery = 4
 
     /// Devolve a mensagem de erro, ou nil se adicionou.
     func addHost(_ raw: String) -> String? {
@@ -196,19 +218,31 @@ final class Monitor {
             if self?.remote[host]?.hostname == nil, let name = await Remote.hostname(host), !Task.isCancelled {
                 self?.remote[host, default: RemoteHost()].hostname = name
             }
+            var round = 0
             while !Task.isCancelled {
-                let result = await Remote.collect(host) // nonisolated: roda fora da main
+                let stats = round % Self.remoteStatsEvery == 0
+                round += 1
+                let result = await Remote.collect(host, stats: stats) // nonisolated: roda fora da main
                 guard !Task.isCancelled, let self else { return }
-                self.applyRemote(host, result)
-                try? await Task.sleep(for: .seconds(Self.remoteInterval))
+                self.applyRemote(host, result, keepStats: !stats)
+                try? await Task.sleep(for: .seconds(self.visible ? Self.remoteInterval : Self.idleRemoteInterval))
             }
         }
     }
 
-    private func applyRemote(_ host: String, _ result: Remote.Collected) {
+    /// `keepStats`: a rodada veio sem `docker stats`; os containers mantêm o último consumo.
+    private func applyRemote(_ host: String, _ result: Remote.Collected, keepStats: Bool = false) {
         var state = remote[host] ?? RemoteHost()
         state.checked = true
-        if let items = result.items {
+        if var items = result.items {
+            if keepStats {
+                let old = Dictionary(state.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+                for i in items.indices where items[i].kind == .docker {
+                    guard items[i].status.isUp || items[i].status == .unhealthy, let o = old[items[i].id] else { continue }
+                    items[i].cpu = o.cpu
+                    items[i].memBytes = o.memBytes
+                }
+            }
             state.items = items
             state.online = true
             state.error = nil

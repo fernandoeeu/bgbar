@@ -84,7 +84,7 @@ enum Remote {
           echo '@@bgbar:inspect'
           ids=$(docker ps -q --no-trunc)
           [ -n "$ids" ] && docker inspect --format '{{.Id}} {{.State.StartedAt}}' $ids
-          echo '@@bgbar:stats'
+          [ -n "$stats" ] && echo '@@bgbar:stats' &&
           docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'
         fi
         echo '@@bgbar:end'
@@ -97,8 +97,9 @@ enum Remote {
         var error: String?
     }
 
-    static func collect(_ host: String) async -> Collected {
-        let r = await run(host, collectScript, timeout: 25)
+    /// `stats: false` pula o `docker stats` (a seção não vem; ver `Monitor.remoteStatsEvery`).
+    static func collect(_ host: String, stats: Bool = true) async -> Collected {
+        let r = await run(host, "stats=\(stats ? "1" : "")\n" + collectScript, timeout: 25)
         if let items = parse(r.out, host: host) { return Collected(items: items) }
         return Collected(error: errorText(r))
     }
