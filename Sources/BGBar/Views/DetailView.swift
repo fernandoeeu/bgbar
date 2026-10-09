@@ -6,6 +6,10 @@ struct DetailView: View {
     let onBack: () -> Void
     private let monitor = Monitor.shared
     @State private var killConfirm = false
+    /// Parar/reiniciar armado: o segundo clique no mesmo botão confirma (desarma em 4 s).
+    @State private var armed: Actions.Op?
+    /// Ação destrutiva pedida pelo menu ⋯, aguardando confirmação.
+    @State private var menuConfirm: Actions.Op?
 
     /// Estado ao vivo (ou o último conhecido, se o item sumiu da lista).
     private var item: Item { monitor.item(id: initial.id) ?? gone }
@@ -40,6 +44,13 @@ struct DetailView: View {
             .frame(maxHeight: .infinity)
         }
         .onExitCommand(perform: onBack)
+        .confirmDestructive($menuConfirm, on: item)
+        .onChange(of: monitor.busy.contains(item.id)) { _, b in if b { armed = nil } }
+        .task(id: armed) {
+            guard armed != nil else { return }
+            try? await Task.sleep(for: .seconds(4))
+            if !Task.isCancelled { armed = nil }
+        }
     }
 
     // MARK: Barra superior
@@ -64,7 +75,7 @@ struct DetailView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             Menu {
-                ItemMenu(item: item)
+                ItemMenu(item: item) { menuConfirm = $0 }
             } label: {
                 Image(systemName: "ellipsis").font(.system(size: 12, weight: .semibold))
                     .frame(width: 22, height: 22).contentShape(Rectangle())
@@ -125,16 +136,14 @@ struct DetailView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 if Actions.canStart(item) {
-                    Button { Run.perform(.start, on: item) } label: { Label("Iniciar", systemImage: "play.fill") }
+                    Button { Actions.run(.start, on: item) } label: { Label("Iniciar", systemImage: "play.fill") }
                         .buttonStyle(PillButtonStyle(tint: Status.running.color, prominent: true))
                 }
                 if Actions.canStop(item) {
-                    Button { Run.perform(.stop, on: item) } label: { Label("Parar", systemImage: "stop.fill") }
-                        .buttonStyle(PillButtonStyle())
+                    armedButton(.stop, "Parar", symbol: "stop.fill", item: item)
                 }
                 if Actions.canRestart(item) {
-                    Button { Run.perform(.restart, on: item) } label: { Label("Reiniciar", systemImage: "arrow.clockwise") }
-                        .buttonStyle(PillButtonStyle())
+                    armedButton(.restart, "Reiniciar", symbol: "arrow.clockwise", item: item)
                 }
                 Spacer(minLength: 0)
                 Button { monitor.togglePin(item) } label: {
@@ -157,6 +166,28 @@ struct DetailView: View {
         }
     }
 
+    /// Mesmo padrão do `ItemRow`: o primeiro clique arma (ícone vira ✓ e fica vermelho,
+    /// texto igual para não mudar a largura), o segundo executa.
+    private func armedButton(_ op: Actions.Op, _ title: String, symbol: String, item: Item) -> some View {
+        let isArmed = armed == op
+        return Button {
+            if isArmed {
+                armed = nil
+                Actions.run(op, on: item)
+            } else {
+                armed = op
+            }
+        } label: {
+            Label {
+                Text(title)
+            } icon: {
+                Image(systemName: isArmed ? "checkmark" : symbol).frame(width: 12)
+            }
+        }
+        .buttonStyle(PillButtonStyle(tint: isArmed ? Status.failed.color : .primary, prominent: isArmed))
+        .help(isArmed ? "Clique de novo para \(title.lowercased()) \(item.name)" : title)
+    }
+
     @ViewBuilder
     private func killRow(_ item: Item) -> some View {
         HStack(spacing: 6) {
@@ -171,13 +202,13 @@ struct DetailView: View {
                     .buttonStyle(PillButtonStyle(tint: .secondary))
                 Button("SIGKILL") {
                     killConfirm = false
-                    Run.perform(.kill(force: true), on: item)
+                    Actions.run(.kill(force: true), on: item)
                 }
                 .buttonStyle(PillButtonStyle(tint: Status.failed.color))
                 .help("Forçar (não dá chance de o processo limpar)")
                 Button("Confirmar") {
                     killConfirm = false
-                    Run.perform(.kill(force: false), on: item)
+                    Actions.run(.kill(force: false), on: item)
                 }
                 .buttonStyle(PillButtonStyle(tint: Status.failed.color, prominent: true))
             } else {
@@ -223,7 +254,6 @@ struct DetailView: View {
                             Text(String(pid)).font(.system(size: 11.5, design: .monospaced))
                             IconButton(symbol: "doc.on.doc", help: "Copiar PID", size: 18) {
                                 Actions.copyPID(item)
-                                monitor.toast = "PID \(pid) copiado"
                             }
                         }
                     }

@@ -277,8 +277,12 @@ final class Monitor {
         }
     }
 
-    var health: Health {
-        let p = problems
+    var health: Health { Self.health(of: problems) }
+
+    /// Saúde só de uma aba: o ponto da aba acende pelos mesmos critérios do cabeçalho.
+    func health(_ kind: Kind) -> Health { Self.health(of: problems.filter { $0.kind == kind }) }
+
+    private static func health(of p: [Item]) -> Health {
         if p.contains(where: { $0.status == .failed || $0.status == .unhealthy || ($0.isGhost) || ($0.status == .stopped || $0.status == .notLoaded) }) {
             return .critical
         }

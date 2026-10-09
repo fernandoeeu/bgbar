@@ -25,14 +25,8 @@ private struct MenuBarLabel: View {
 
     var body: some View {
         let agents = claude.runningCount
-        HStack(spacing: 3) {
-            Image(nsImage: StatusIcon.image(for: monitor.health))
-            if agents > 0 {
-                // Indicador separado: agentes Claude rodando agora.
-                Text("\(agents)")
-                    .monospacedDigit()
-            }
-        }
-        .accessibilityLabel(agents > 0 ? "BGBar, \(agents) agentes Claude rodando" : "BGBar")
+        // Uma imagem só (ícone + número): HStack no rótulo do MenuBarExtra não renderiza direito.
+        Image(nsImage: StatusIcon.image(for: monitor.health, count: agents))
+            .accessibilityLabel(agents > 0 ? "BGBar, \(agents) agentes Claude rodando" : "BGBar")
     }
 }

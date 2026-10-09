@@ -5,12 +5,21 @@ struct SectionView: View {
     let kind: Kind
     let onSelect: (Item) -> Void
     private let monitor = Monitor.shared
+    @AppStorage(DockerFilter.showStoppedKey) private var showStopped = false
 
     var body: some View {
-        let items = monitor.items(kind)
+        let items = DockerFilter.visible(kind, showStopped: showStopped)
         VStack(alignment: .leading, spacing: 6) {
             Card {
                 content(items)
+            }
+            let stopped = monitor.items(kind).count - items.count
+            if stopped > 0 {
+                Text("\(stopped) parado\(stopped == 1 ? "" : "s") · mostre em ⋯ › Mostrar containers parados")
+                    .font(.system(size: 10))
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 4)
             }
             let hidden = monitor.hiddenCount(kind)
             if hidden > 0, !monitor.showHidden {
@@ -63,6 +72,23 @@ struct SectionView: View {
         case .agent: "Agentes em ~/Library/LaunchAgents aparecem aqui."
         case .docker: "Containers do OrbStack/Docker aparecem aqui."
         case .dev: "bun, node, python e afins aparecem quando subirem."
+        }
+    }
+}
+
+/// Containers parados ficam escondidos por padrão (⋯ › Mostrar containers parados).
+@MainActor
+enum DockerFilter {
+    static let showStoppedKey = "showStoppedContainers"
+
+    /// Itens visíveis da aba. Container parado (exited/created/dead) sai da lista, exceto
+    /// fixados: esses contam como problema quando caem, então continuam à vista.
+    static func visible(_ kind: Kind, showStopped: Bool) -> [Item] {
+        let monitor = Monitor.shared
+        let items = monitor.items(kind)
+        guard kind == .docker, !showStopped else { return items }
+        return items.filter { i in
+            i.status.isUp || i.status == .unhealthy || i.status == .restarting || monitor.isPinned(i)
         }
     }
 }

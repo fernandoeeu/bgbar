@@ -80,6 +80,7 @@ private struct TabBar: View {
     @Binding var tab: Tab
     private let monitor = Monitor.shared
     @ObservedObject private var claude = ClaudeAgentsStore.shared
+    @AppStorage(DockerFilter.showStoppedKey) private var showStopped = false
 
     var body: some View {
         HStack(spacing: 4) {
@@ -93,12 +94,14 @@ private struct TabBar: View {
         .padding(.bottom, 8)
     }
 
-    private func stats(_ t: Tab) -> (count: String, problem: Bool) {
+    private func stats(_ t: Tab) -> (count: String, problem: Color?) {
         if let kind = t.kind {
-            let items = monitor.items(kind)
+            // Conta só o que a aba mostra; o ponto segue os critérios do cabeçalho (`Monitor.problems`).
+            let items = DockerFilter.visible(kind, showStopped: showStopped)
             let up = items.filter { $0.status.isUp || $0.status == .unhealthy }.count
-            let bad = items.contains { $0.status == .failed || $0.status == .unhealthy }
-            if kind == .docker && !monitor.dockerAvailable { return ("off", false) }
+            let health = monitor.health(kind)
+            let bad = health == .ok ? nil : health.color
+            if kind == .docker && !monitor.dockerAvailable { return ("off", nil) }
             return (items.isEmpty ? "0" : "\(up)/\(items.count)", bad)
         }
         func walk(_ nodes: [ClaudeAgentNode]) -> (total: Int, failed: Bool) {
@@ -111,14 +114,14 @@ private struct TabBar: View {
         let total = all.reduce(0) { $0 + $1.total }
         let failed = all.contains { $0.failed }
         let running = claude.runningCount
-        return (total == 0 ? "0" : "\(running)/\(total)", failed)
+        return (total == 0 ? "0" : "\(running)/\(total)", failed ? Status.failed.color : nil)
     }
 }
 
 private struct TabButton: View {
     let tab: Tab
     let count: String
-    let problem: Bool
+    let problem: Color?
     let selected: Bool
     let action: () -> Void
     @State private var hover = false
@@ -137,9 +140,8 @@ private struct TabButton: View {
                         .frame(minWidth: 26)
                     // Espaço sempre reservado: o ponto não empurra nada quando aparece.
                     Circle()
-                        .fill(Status.failed.color)
+                        .fill(problem ?? .clear)
                         .frame(width: 5, height: 5)
-                        .opacity(problem ? 1 : 0)
                 }
                 Text(tab.title)
                     .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
@@ -161,7 +163,7 @@ private struct TabButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
-        .help(problem ? "\(tab.title): há itens com problema" : tab.title)
+        .help(problem != nil ? "\(tab.title): há itens com problema" : tab.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
@@ -221,17 +223,24 @@ private struct HeaderView: View {
 
 private struct MoreMenu: View {
     @Bindable private var monitor = Monitor.shared
-    @State private var loginEnabled = SMAppService.mainApp.status == .enabled
+    @AppStorage(DockerFilter.showStoppedKey) private var showStopped = false
+    /// Lido ao abrir o menu (e após mudar), não a cada redesenho.
+    @State private var loginStatus: SMAppService.Status = .notRegistered
+    private var loginEnabled: Bool { loginStatus == .enabled }
 
     var body: some View {
         Menu {
             Toggle(isOn: $monitor.showHidden) {
                 Text("Mostrar ocultos (\(monitor.hiddenCount()))")
             }
+            .onAppear(perform: readLoginStatus)
+            Toggle(isOn: $showStopped) {
+                Text("Mostrar containers parados")
+            }
             Toggle(isOn: Binding(get: { loginEnabled }, set: setLogin)) {
                 Text("Abrir ao iniciar sessão")
             }
-            if SMAppService.mainApp.status == .requiresApproval {
+            if loginStatus == .requiresApproval {
                 Button("Aprovar em Ajustes do Sistema…") { SMAppService.openSystemSettingsLoginItems() }
             }
             Divider()
@@ -247,18 +256,20 @@ private struct MoreMenu: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Mais opções")
-        .onAppear { loginEnabled = SMAppService.mainApp.status == .enabled }
+        .onAppear(perform: readLoginStatus)
     }
+
+    private func readLoginStatus() { loginStatus = SMAppService.mainApp.status }
 
     private func setLogin(_ on: Bool) {
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-            loginEnabled = SMAppService.mainApp.status == .enabled
-            if SMAppService.mainApp.status == .requiresApproval {
+            readLoginStatus()
+            if loginStatus == .requiresApproval {
                 monitor.toast = "Aprove o BGBar em Ajustes › Itens de início"
             }
         } catch {
-            loginEnabled = SMAppService.mainApp.status == .enabled
+            readLoginStatus()
             monitor.toast = "Não deu para \(on ? "ativar" : "desativar") o início automático: \(error.localizedDescription)"
         }
     }

@@ -16,6 +16,8 @@ struct ItemRow: View {
     @State private var running: Slot?
     /// Abertura de log em andamento (é async e não passa pelo `busy` do Monitor).
     @State private var logBusy: Slot?
+    /// Ação destrutiva pedida pelo menu de contexto, aguardando confirmação.
+    @State private var menuConfirm: Actions.Op?
 
     var body: some View {
         let busy = monitor.busy.contains(item.id)
@@ -72,8 +74,9 @@ struct ItemRow: View {
         .onHover { hover = $0 }
         .onTapGesture(perform: onOpen)
         .contextMenu {
-            ItemMenu(item: item, onOpen: onOpen)
+            ItemMenu(item: item, onOpen: onOpen) { menuConfirm = $0 }
         }
+        .confirmDestructive($menuConfirm, on: item)
         .onChange(of: busy) { _, b in
             if b { armed = nil } else { running = nil }
         }
@@ -292,9 +295,12 @@ struct LiveChip: View {
 }
 
 /// Menu de contexto com todas as ações (reaproveitado no detalhe se preciso).
+/// Num menu não dá para usar o segundo clique: parar, reiniciar e encerrar passam por
+/// `confirm`, e quem hospeda o menu mostra a confirmação (`confirmDestructive`).
 struct ItemMenu: View {
     let item: Item
     var onOpen: (() -> Void)? = nil
+    let confirm: (Actions.Op) -> Void
     private let monitor = Monitor.shared
 
     var body: some View {
@@ -303,18 +309,18 @@ struct ItemMenu: View {
             Divider()
         }
         if Actions.canStart(item) {
-            Button("Iniciar", systemImage: "play.fill") { Run.perform(.start, on: item) }
+            Button("Iniciar", systemImage: "play.fill") { Actions.run(.start, on: item) }
         }
         if Actions.canStop(item) {
-            Button("Parar", systemImage: "stop.fill") { Run.perform(.stop, on: item) }
+            Button("Parar…", systemImage: "stop.fill") { confirm(.stop) }
         }
         if Actions.canRestart(item) {
-            Button("Reiniciar", systemImage: "arrow.clockwise") { Run.perform(.restart, on: item) }
+            Button("Reiniciar…", systemImage: "arrow.clockwise") { confirm(.restart) }
         }
         if Actions.canKill(item) {
             Menu("Encerrar processo") {
-                Button("SIGTERM") { Run.perform(.kill(force: false), on: item) }
-                Button("SIGKILL (forçar)") { Run.perform(.kill(force: true), on: item) }
+                Button("SIGTERM…") { confirm(.kill(force: false)) }
+                Button("SIGKILL (forçar)…") { confirm(.kill(force: true)) }
             }
         }
         Divider()
@@ -340,5 +346,46 @@ struct ItemMenu: View {
                systemImage: monitor.isPinned(item) ? "pin.slash" : "pin") { monitor.togglePin(item) }
         Button(monitor.isHidden(item) ? "Mostrar" : "Ocultar",
                systemImage: monitor.isHidden(item) ? "eye" : "eye.slash") { monitor.toggleHidden(item) }
+    }
+}
+
+// MARK: - Confirmação de ação destrutiva (menus)
+
+extension View {
+    /// Pede confirmação de `pending` (vindo de um menu) antes de chamar `Actions.run`.
+    func confirmDestructive(_ pending: Binding<Actions.Op?>, on item: Item) -> some View {
+        let op = pending.wrappedValue
+        return confirmationDialog(
+            op.map { $0.confirmTitle(item) } ?? "",
+            isPresented: Binding(get: { pending.wrappedValue != nil }, set: { if !$0 { pending.wrappedValue = nil } }),
+            titleVisibility: .visible,
+            presenting: op
+        ) { op in
+            Button(op.confirmButton, role: .destructive) { Actions.run(op, on: item) }
+            Button("Cancelar", role: .cancel) {}
+        }
+    }
+}
+
+extension Actions.Op {
+    func confirmTitle(_ item: Item) -> String {
+        let pid = item.pid.map(String.init) ?? "?"
+        switch self {
+        case .start: return "Iniciar \(item.name)?"
+        case .stop: return "Parar \(item.name)?"
+        case .restart: return "Reiniciar \(item.name)?"
+        case .kill(false): return "Enviar SIGTERM ao PID \(pid) (\(item.name))?"
+        case .kill(true): return "Enviar SIGKILL ao PID \(pid) (\(item.name))? O processo não tem chance de limpar."
+        }
+    }
+
+    var confirmButton: String {
+        switch self {
+        case .start: "Iniciar"
+        case .stop: "Parar"
+        case .restart: "Reiniciar"
+        case .kill(false): "Enviar SIGTERM"
+        case .kill(true): "Forçar SIGKILL"
+        }
     }
 }

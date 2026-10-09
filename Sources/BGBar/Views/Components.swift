@@ -14,33 +14,6 @@ enum UI {
     static let quick = Animation.easeOut(duration: 0.15)
 }
 
-// MARK: - Execução de ações (busy + supressão + refresh)
-
-@MainActor
-enum Run {
-    enum Op { case start, stop, restart, kill(force: Bool) }
-
-    static func perform(_ op: Op, on item: Item) {
-        let m = Monitor.shared
-        guard !m.busy.contains(item.id) else { return }
-        m.busy.insert(item.id)
-        switch op {
-        case .start: break
-        case .stop, .restart, .kill: m.suppressNotifications(for: item.id)
-        }
-        Task { @MainActor in
-            switch op {
-            case .start: await Actions.start(item)
-            case .stop: await Actions.stop(item)
-            case .restart: await Actions.restart(item)
-            case .kill(let force): await Actions.kill(item, force: force)
-            }
-            m.busy.remove(item.id)
-            m.refreshNow()
-        }
-    }
-}
-
 // MARK: - Bolinha de status
 
 struct StatusDot: View {

@@ -30,14 +30,6 @@ enum Actions {
         Task { @MainActor in await perform(op, item) }
     }
 
-    // API antiga, mantida para a UI atual (`Run.perform`) compilar. Cada uma faz o ciclo
-    // completo sozinha; quem chama NÃO precisa (nem deve) mexer em busy/supressão/refresh.
-    static func start(_ item: Item) async { await perform(.start, item) }
-    static func stop(_ item: Item) async { await perform(.stop, item) }
-    static func restart(_ item: Item) async { await perform(.restart, item) }
-    /// A UI já pediu confirmação antes de chamar.
-    static func kill(_ item: Item, force: Bool = false) async { await perform(.kill(force: force), item) }
-
     /// Único lugar que mexe em busy, supressão de notificação, toast e refresh.
     private static func perform(_ op: Op, _ item: Item) async {
         let monitor = Monitor.shared
