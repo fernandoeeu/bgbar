@@ -15,7 +15,7 @@ final class Monitor {
     private(set) var isRefreshing = false
     /// Mensagem transitória para a UI (erro/sucesso de ação).
     var toast: String?
-    /// IDs com ação em andamento (para spinner na linha).
+    /// IDs com ação em andamento (para spinner na linha). Dono: `Actions` (a UI só lê).
     var busy: Set<String> = []
 
     var showHidden: Bool {
@@ -38,6 +38,8 @@ final class Monitor {
     @ObservationIgnored private var dockerStats: [String: Docker.Stat] = [:]
     @ObservationIgnored private var tick = 0
     @ObservationIgnored private var dockerBackoff = 0
+    @ObservationIgnored private var refreshAgain = false
+    @ObservationIgnored private var statsInFlight = false
 
     private init() {
         let d = UserDefaults.standard
@@ -59,14 +61,23 @@ final class Monitor {
         }
     }
 
+    /// Pede uma rodada já. Se uma estiver em andamento (com dados possivelmente
+    /// anteriores a uma ação), agenda outra logo em seguida em vez de descartar.
     func refreshNow() {
+        if isRefreshing { refreshAgain = true; return }
         Task { await refresh() }
     }
 
     func refresh() async {
-        guard !isRefreshing else { return }
+        guard !isRefreshing else { refreshAgain = true; return }
         isRefreshing = true
-        defer { isRefreshing = false }
+        defer {
+            isRefreshing = false
+            if refreshAgain {
+                refreshAgain = false
+                Task { await refresh() }
+            }
+        }
         tick += 1
 
         let wantDocker = dockerBackoff == 0
@@ -86,13 +97,14 @@ final class Monitor {
             }
         }
         applyDockerStats()
-        if dockerAvailable, tick % 4 == 1 {
+        if dockerAvailable, !statsInFlight, tick % 4 == 1 {
+            statsInFlight = true
             Task { [weak self] in
-                let stats = await Docker.stats()
-                await MainActor.run {
-                    self?.dockerStats = stats
-                    self?.applyDockerStats()
-                }
+                let stats = await Docker.stats() // nonisolated: roda fora da main
+                guard let self else { return }
+                self.statsInFlight = false
+                self.dockerStats = stats
+                self.applyDockerStats()
             }
         }
 
@@ -135,7 +147,8 @@ final class Monitor {
 
     /// Evita notificar quedas causadas pelo próprio app (stop/restart/kill).
     func suppressNotifications(for id: String, seconds: TimeInterval = 20) {
-        suppressedUntil[id] = Date().addingTimeInterval(seconds)
+        let until = Date().addingTimeInterval(seconds)
+        suppressedUntil[id] = max(until, suppressedUntil[id] ?? until)
     }
 
     private func detectDrops() {
@@ -159,7 +172,7 @@ final class Monitor {
                 Notifier.shared.notifyDown(new, previous: old)
             case .dev:
                 // Processos de dev só notificam se fixados.
-                guard pinned.contains(old.key), new == nil || !(new!.status.isUp) else { continue }
+                guard pinned.contains(old.key), !(new?.status.isUp ?? false) else { continue }
                 var gone = old
                 gone.status = .stopped
                 gone.pid = nil
@@ -241,8 +254,10 @@ final class Monitor {
         return kinds.reduce(0) { $0 + all($1).filter { hidden.contains($0.key) }.count }
     }
 
+    /// Busca também entre ocultos (o detalhe não pode "sumir" ao ocultar o item) e fantasmas.
     func item(id: String) -> Item? {
-        for k in Kind.allCases { if let i = items(k).first(where: { $0.id == id }) { return i } }
+        for k in Kind.allCases { if let i = all(k).first(where: { $0.id == id }) { return i } }
+        for k in Kind.allCases { if let i = items(k).first(where: { $0.id == id && $0.isGhost }) { return i } }
         return nil
     }
 

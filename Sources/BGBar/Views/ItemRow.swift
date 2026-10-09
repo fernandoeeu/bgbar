@@ -1,11 +1,21 @@
 import SwiftUI
 
-/// Linha compacta de um item na lista.
+/// Linha compacta de um item na lista, com as ações sempre visíveis à direita.
+///
+/// Layout estável: nada aqui anima, os slots de ação têm largura fixa (slot sem ação
+/// fica vazio, mantendo as colunas alinhadas entre linhas) e números ao vivo usam
+/// dígitos monoespaçados com largura mínima.
 struct ItemRow: View {
     let item: Item
     let onOpen: () -> Void
     private let monitor = Monitor.shared
     @State private var hover = false
+    /// Ação destrutiva armada: o segundo clique no mesmo botão confirma.
+    @State private var armed: Slot?
+    /// Ação disparada por esta linha (para pôr o spinner no slot certo).
+    @State private var running: Slot?
+    /// Abertura de log em andamento (é async e não passa pelo `busy` do Monitor).
+    @State private var logBusy: Slot?
 
     var body: some View {
         let busy = monitor.busy.contains(item.id)
@@ -13,7 +23,7 @@ struct ItemRow: View {
         let hidden = monitor.isHidden(item)
 
         HStack(alignment: .top, spacing: 9) {
-            StatusDot(status: item.status)
+            RowDot(color: item.status.color, glow: item.status != .stopped && item.status != .notLoaded)
                 .padding(.top, 5)
                 .frame(width: 14)
 
@@ -49,7 +59,7 @@ struct ItemRow: View {
 
             Spacer(minLength: 4)
 
-            trailing(busy: busy)
+            actions(busy: busy)
                 .padding(.top, 1)
         }
         .padding(.horizontal, 8)
@@ -59,9 +69,20 @@ struct ItemRow: View {
                 .fill(Color.primary.opacity(hover ? 0.06 : 0))
         )
         .contentShape(Rectangle())
-        .onHover { h in withAnimation(UI.quick) { hover = h } }
+        .onHover { hover = $0 }
         .onTapGesture(perform: onOpen)
-        .contextMenu { ItemMenu(item: item, onOpen: onOpen) }
+        .contextMenu {
+            ItemMenu(item: item, onOpen: onOpen)
+        }
+        .onChange(of: busy) { _, b in
+            if b { armed = nil } else { running = nil }
+        }
+        .task(id: armed) {
+            // Confirmação desarma sozinha.
+            guard armed != nil else { return }
+            try? await Task.sleep(for: .seconds(4))
+            if !Task.isCancelled { armed = nil }
+        }
     }
 
     private var chips: some View {
@@ -70,13 +91,13 @@ struct ItemRow: View {
                 Chip(text: item.chipStatusText, tint: item.status == .stopped || item.status == .notLoaded ? nil : item.status.color)
             }
             if let up = item.uptime {
-                Chip(text: Fmt.uptime(up), symbol: "clock")
+                LiveChip(text: Fmt.uptime(up), symbol: "clock", minWidth: 38)
             }
             if let cpu = item.cpu, item.status.isUp || item.status == .unhealthy {
-                Chip(text: Fmt.cpu(cpu), symbol: "cpu", tint: cpu >= 80 ? Status.restarting.color : nil)
+                LiveChip(text: Fmt.cpu(cpu), symbol: "cpu", minWidth: 32, tint: cpu >= 80 ? Status.restarting.color : nil)
             }
             if let mem = item.memBytes, item.status.isUp || item.status == .unhealthy {
-                Chip(text: Fmt.memory(mem), symbol: "memorychip")
+                LiveChip(text: Fmt.memory(mem), symbol: "memorychip", minWidth: 40)
             }
             ForEach(item.ports.prefix(3), id: \.self) { PortChip(port: $0) }
             if item.ports.count > 3 {
@@ -90,28 +111,183 @@ struct ItemRow: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    @ViewBuilder
-    private func trailing(busy: Bool) -> some View {
-        if busy {
-            ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 22, height: 22)
-        } else if hover {
-            HStack(spacing: 0) {
-                if Actions.canStart(item) {
-                    IconButton(symbol: "play.fill", help: "Iniciar", tint: Status.running.color) { Run.perform(.start, on: item) }
-                }
-                if Actions.canRestart(item), item.status.isUp || item.status == .unhealthy {
-                    IconButton(symbol: "arrow.clockwise", help: "Reiniciar") { Run.perform(.restart, on: item) }
-                }
-                if Actions.canStop(item) {
-                    IconButton(symbol: "stop.fill", help: "Parar") { Run.perform(.stop, on: item) }
-                }
-                if Actions.hasLog(item) {
-                    IconButton(symbol: "doc.text", help: "Abrir log") { Task { await Actions.openLog(item, in: .console) } }
-                }
-                IconButton(symbol: "chevron.right", help: "Detalhes", size: 20, action: onOpen)
+    // MARK: Ações
+
+    /// Colunas fixas de ação. A ordem é a mesma em todas as linhas.
+    enum Slot: Hashable { case power, restart, kill, log, finder }
+
+    private func actions(busy: Bool) -> some View {
+        HStack(spacing: 0) {
+            powerSlot(busy: busy)
+            slot(.restart, show: Actions.canRestart(item) && (item.status.isUp || item.status == .unhealthy), busy: busy) {
+                RowAction(symbol: "arrow.clockwise",
+                          help: armed == .restart ? "Clique de novo para reiniciar \(item.name)" : "Reiniciar",
+                          armed: armed == .restart, disabled: busy) { destructive(.restart, op: .restart) }
             }
-            .transition(.opacity.combined(with: .move(edge: .trailing)))
+            slot(.kill, show: Actions.canKill(item), busy: busy) {
+                RowAction(symbol: "xmark.octagon",
+                          help: armed == .kill ? "Clique de novo para enviar SIGTERM ao PID \(item.pid.map(String.init) ?? "?")" : "Encerrar processo (SIGTERM)",
+                          armed: armed == .kill, disabled: busy) { destructive(.kill, op: .kill(force: false)) }
+            }
+            slot(.log, show: Actions.hasLog(item), busy: false) {
+                RowAction(symbol: "doc.text", help: "Ver log no Console") { openLog(.log, in: .console) }
+            }
+            slot(.finder, show: Actions.hasLog(item), busy: false) {
+                RowAction(symbol: "folder", help: "Mostrar log no Finder") { openLog(.finder, in: .finder) }
+            }
         }
+    }
+
+    /// Iniciar ou parar (mutuamente exclusivos), no mesmo slot.
+    private func powerSlot(busy: Bool) -> some View {
+        // Ocupado por ação vinda de fora da linha (detalhe, menu): spinner no primeiro slot.
+        let external = busy && running == nil
+        return Group {
+            if external || (busy && running == .power) || logBusy == .power {
+                RowSpinner()
+            } else if Actions.canStop(item) {
+                RowAction(symbol: "stop.fill",
+                          help: armed == .power ? "Clique de novo para parar \(item.name)" : "Parar",
+                          armed: armed == .power, disabled: busy) { destructive(.power, op: .stop) }
+            } else if Actions.canStart(item) {
+                RowAction(symbol: "play.fill", help: "Iniciar", tint: Status.running.color, disabled: busy) {
+                    running = .power
+                    Actions.run(.start, on: item)
+                }
+            } else {
+                RowSlotSpacer()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func slot<B: View>(_ s: Slot, show: Bool, busy: Bool, @ViewBuilder button: () -> B) -> some View {
+        if (busy && running == s) || logBusy == s {
+            RowSpinner()
+        } else if show {
+            button()
+        } else {
+            RowSlotSpacer()
+        }
+    }
+
+    /// Primeiro clique arma, segundo executa.
+    private func destructive(_ s: Slot, op: Actions.Op) {
+        if armed == s {
+            armed = nil
+            running = s
+            Actions.run(op, on: item)
+        } else {
+            armed = s
+        }
+    }
+
+    private func openLog(_ s: Slot, in app: Actions.LogApp) {
+        guard logBusy == nil else { return }
+        logBusy = s
+        Task {
+            await Actions.openLog(item, in: app)
+            logBusy = nil
+        }
+    }
+}
+
+// MARK: - Peças de linha (sem animação, tamanho fixo)
+
+enum RowMetrics {
+    /// Lado de cada slot de ação.
+    static let slot: CGFloat = 22
+}
+
+/// Botão de ícone de linha: largura fixa, hover só muda cor, sem animação.
+/// `armed` pinta de vermelho (estado "clique de novo para confirmar").
+struct RowAction: View {
+    let symbol: String
+    var help: String = ""
+    var tint: Color = .secondary
+    var armed = false
+    var disabled = false
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: armed ? "checkmark" : symbol)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(armed ? Color.white : (hover ? Color.primary : tint))
+                .frame(width: RowMetrics.slot, height: RowMetrics.slot)
+                .background(
+                    Circle().fill(armed ? Status.failed.color : Color.primary.opacity(hover ? 0.1 : 0))
+                        .padding(1)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.35 : 1)
+        .onHover { hover = $0 }
+        .help(help)
+    }
+}
+
+/// Spinner com o mesmo tamanho de um `RowAction`.
+struct RowSpinner: View {
+    var body: some View {
+        ProgressView()
+            .controlSize(.mini)
+            .frame(width: RowMetrics.slot, height: RowMetrics.slot)
+    }
+}
+
+/// Slot vazio: mantém as colunas de ação alinhadas.
+struct RowSlotSpacer: View {
+    var body: some View {
+        Color.clear.frame(width: RowMetrics.slot, height: RowMetrics.slot)
+    }
+}
+
+/// Ponto de estado estático (sem pulso).
+struct RowDot: View {
+    let color: Color
+    var glow = true
+    var size: CGFloat = 8
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(color)
+                .shadow(color: glow ? color.opacity(0.6) : .clear, radius: 2.5)
+            Circle()
+                .strokeBorder(.white.opacity(glow ? 0.25 : 0), lineWidth: 0.5)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+/// Chip para valor ao vivo: dígitos monoespaçados e largura mínima, para não "pular".
+struct LiveChip: View {
+    var text: String
+    var symbol: String? = nil
+    var minWidth: CGFloat
+    var tint: Color? = nil
+
+    var body: some View {
+        HStack(spacing: 3) {
+            if let symbol {
+                Image(systemName: symbol).font(.system(size: 8.5, weight: .semibold))
+            }
+            Text(text)
+                .font(.system(size: 10, weight: .medium))
+                .monospacedDigit()
+                .lineLimit(1)
+                .frame(minWidth: minWidth, alignment: .leading)
+        }
+        .foregroundStyle(tint ?? .secondary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(
+            Capsule(style: .continuous).fill((tint ?? .primary).opacity(tint == nil ? 0.06 : 0.13))
+        )
     }
 }
 

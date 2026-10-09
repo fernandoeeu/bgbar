@@ -1,11 +1,10 @@
 import SwiftUI
 
-/// Página de detalhe dentro do popover.
+/// Página de detalhe dentro do popover: substitui as abas (com "Voltar") na mesma área de altura fixa.
 struct DetailView: View {
     let initial: Item
     let onBack: () -> Void
     private let monitor = Monitor.shared
-    @State private var height: CGFloat = 300
     @State private var killConfirm = false
 
     /// Estado ao vivo (ou o último conhecido, se o item sumiu da lista).
@@ -36,9 +35,9 @@ struct DetailView: View {
                     }
                 }
                 .padding(UI.pad)
-                .measureHeight { height = $0 }
             }
-            .frame(height: min(max(height, 120), UI.maxHeight - 60))
+            // Ocupa a mesma área fixa da lista (UI.bodyHeight): abrir o detalhe não redimensiona o popover.
+            .frame(maxHeight: .infinity)
         }
         .onExitCommand(perform: onBack)
     }
@@ -168,7 +167,7 @@ struct DetailView: View {
                 Text("Enviar SIGTERM?")
                     .font(.system(size: 11.5, weight: .semibold))
                 Spacer(minLength: 0)
-                Button("Cancelar") { withAnimation(UI.spring) { killConfirm = false } }
+                Button("Cancelar") { killConfirm = false }
                     .buttonStyle(PillButtonStyle(tint: .secondary))
                 Button("SIGKILL") {
                     killConfirm = false
@@ -177,13 +176,13 @@ struct DetailView: View {
                 .buttonStyle(PillButtonStyle(tint: Status.failed.color))
                 .help("Forçar (não dá chance de o processo limpar)")
                 Button("Confirmar") {
-                    withAnimation(UI.spring) { killConfirm = false }
+                    killConfirm = false
                     Run.perform(.kill(force: false), on: item)
                 }
                 .buttonStyle(PillButtonStyle(tint: Status.failed.color, prominent: true))
             } else {
                 Button {
-                    withAnimation(UI.spring) { killConfirm = true }
+                    killConfirm = true
                 } label: {
                     Label("Encerrar processo\(item.pid.map { " \($0)" } ?? "")", systemImage: "xmark.octagon")
                 }
@@ -196,12 +195,11 @@ struct DetailView: View {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Status.failed.color.opacity(killConfirm ? 0.08 : 0))
         )
-        .transition(.opacity)
         .task(id: killConfirm) {
             // Volta sozinho se ficar parado esperando.
             guard killConfirm else { return }
             try? await Task.sleep(for: .seconds(8))
-            if !Task.isCancelled { withAnimation(UI.spring) { killConfirm = false } }
+            if !Task.isCancelled { killConfirm = false }
         }
     }
 

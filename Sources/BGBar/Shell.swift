@@ -54,7 +54,16 @@ enum Shell {
                     cont.resume(returning: Result(status: -1, out: "", err: error.localizedDescription))
                     return
                 }
-                let killer = DispatchWorkItem { if process.isRunning { process.terminate() } }
+                // Timeout: SIGTERM e, se ainda assim não sair, SIGKILL 2 s depois
+                // (senão a leitura do pipe ficaria presa para sempre).
+                let pid = process.processIdentifier
+                let killer = DispatchWorkItem {
+                    guard process.isRunning else { return }
+                    process.terminate()
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                        if process.isRunning { Darwin.kill(pid, SIGKILL) }
+                    }
+                }
                 DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: killer)
 
                 var errData = Data()

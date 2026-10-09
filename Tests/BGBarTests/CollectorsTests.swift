@@ -145,6 +145,15 @@ final class LaunchAgentsTests: XCTestCase {
     func testParseList() {
         let out = "PID\tStatus\tLabel\n2854\t0\tcom.example.keepawake\n-\t78\tcom.example.broken\n-\t-9\tcom.apple.x\n"
         XCTAssertEqual(LaunchAgents.parseList(out), ["com.example.keepawake", "com.example.broken", "com.apple.x"])
+        let e = LaunchAgents.parseListEntries(out)
+        XCTAssertEqual(e["com.example.keepawake"], .init(pid: 2854, status: 0))
+        XCTAssertEqual(e["com.example.broken"], .init(pid: nil, status: 78))
+        // `print` falhou mas o serviço está carregado: não pode virar "não carregado".
+        let up = LaunchAgents.fallbackState(e["com.example.keepawake"]!)
+        XCTAssertTrue(up.loaded); XCTAssertEqual(up.pid, 2854)
+        let broken = LaunchAgents.fallbackState(e["com.example.broken"]!)
+        XCTAssertEqual(broken.lastExit, 78)
+        XCTAssertEqual(LaunchAgents.fallbackState(e["com.apple.x"]!).lastSignal, "sinal 9")
     }
 
     private let info = LaunchAgents.Info(

@@ -70,7 +70,7 @@ struct LogPanel: View {
                     if follow { proxy.scrollTo("end", anchor: .bottom) }
                 }
                 .onChange(of: follow) { _, on in
-                    if on { withAnimation(UI.quick) { proxy.scrollTo("end", anchor: .bottom) } }
+                    if on { proxy.scrollTo("end", anchor: .bottom) }
                 }
             }
         }

@@ -4,6 +4,7 @@ import SwiftUI
 struct BGBarApp: App {
     init() {
         Monitor.shared.start()
+        ClaudeAgentsStore.shared.start()
         Notifier.shared.requestAuthorization()
     }
 
@@ -20,9 +21,18 @@ struct BGBarApp: App {
 /// Ícone da barra: observa `Monitor.shared.health` e troca a imagem (cacheada).
 private struct MenuBarLabel: View {
     private let monitor = Monitor.shared
+    @ObservedObject private var claude = ClaudeAgentsStore.shared
 
     var body: some View {
-        Image(nsImage: StatusIcon.image(for: monitor.health))
-            .accessibilityLabel("BGBar")
+        let agents = claude.runningCount
+        HStack(spacing: 3) {
+            Image(nsImage: StatusIcon.image(for: monitor.health))
+            if agents > 0 {
+                // Indicador separado: agentes Claude rodando agora.
+                Text("\(agents)")
+                    .monospacedDigit()
+            }
+        }
+        .accessibilityLabel(agents > 0 ? "BGBar, \(agents) agentes Claude rodando" : "BGBar")
     }
 }

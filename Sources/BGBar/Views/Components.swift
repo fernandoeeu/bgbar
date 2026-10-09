@@ -5,8 +5,11 @@ import SwiftUI
 enum UI {
     static let width: CGFloat = 400
     static let maxHeight: CGFloat = 560
+    /// Altura fixa da área acima do rodapé (cabeçalho + abas + conteúdo, ou o detalhe).
+    static let bodyHeight: CGFloat = 470
     static let pad: CGFloat = 12
     static let radius: CGFloat = 10
+    // Mantidas só por compatibilidade com views de outros arquivos; a UI não anima mais.
     static let spring = Animation.spring(response: 0.28, dampingFraction: 0.86)
     static let quick = Animation.easeOut(duration: 0.15)
 }
@@ -45,16 +48,11 @@ struct StatusDot: View {
     var size: CGFloat = 8
 
     var body: some View {
+        // Estados transitórios ganham um anel estático (sem pulso).
         ZStack {
-            if status.isTransient {
-                Circle()
-                    .fill(status.color)
-                    .phaseAnimator([false, true]) { view, on in
-                        view.scaleEffect(on ? 2.4 : 1).opacity(on ? 0 : 0.55)
-                    } animation: { on in
-                        on ? .easeOut(duration: 1.1) : .linear(duration: 0.01)
-                    }
-            }
+            Circle()
+                .strokeBorder(status.color.opacity(status.isTransient ? 0.45 : 0), lineWidth: 1.5)
+                .padding(-2.5)
             Circle()
                 .fill(status.color)
                 .shadow(color: glow ? status.color.opacity(0.7) : .clear, radius: 3)
@@ -103,9 +101,9 @@ struct PortChip: View {
             HStack(spacing: 2) {
                 Text(":\(String(port))")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                if hover {
-                    Image(systemName: "arrow.up.right").font(.system(size: 7.5, weight: .bold))
-                }
+                // Sempre no layout; só fica visível no hover (largura não muda).
+                Image(systemName: "arrow.up.right").font(.system(size: 7.5, weight: .bold))
+                    .opacity(hover ? 1 : 0)
             }
             .foregroundStyle(Color.accentColor)
             .padding(.horizontal, 6)
@@ -113,7 +111,7 @@ struct PortChip: View {
             .background(Capsule(style: .continuous).fill(Color.accentColor.opacity(hover ? 0.22 : 0.12)))
         }
         .buttonStyle(.plain)
-        .onHover { h in withAnimation(UI.quick) { hover = h } }
+        .onHover { hover = $0 }
         .help("Abrir http://localhost:\(String(port))")
     }
 }
@@ -139,7 +137,7 @@ struct IconButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .onHover { h in withAnimation(UI.quick) { hover = h } }
+        .onHover { hover = $0 }
         .help(help)
     }
 }
@@ -172,9 +170,7 @@ struct PillButtonStyle: ButtonStyle {
                         .fill(prominent ? tint.opacity(hover ? 1 : 0.88) : tint.opacity(hover ? 0.16 : 0.09))
                 )
                 .opacity(enabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
-                .scaleEffect(configuration.isPressed ? 0.97 : 1)
-                .animation(UI.quick, value: configuration.isPressed)
-                .onHover { h in withAnimation(UI.quick) { hover = h } }
+                .onHover { hover = $0 }
         }
     }
 }

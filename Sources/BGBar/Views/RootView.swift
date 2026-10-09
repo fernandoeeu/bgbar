@@ -1,57 +1,168 @@
 import SwiftUI
 import ServiceManagement
 
-/// Conteúdo do popover: lista ⇄ detalhe, rodapé e toast.
+/// Abas do popover: uma por `Kind` + Agentes Claude.
+enum Tab: String, CaseIterable, Identifiable {
+    case agent, docker, dev, claude
+    var id: String { rawValue }
+
+    var kind: Kind? {
+        switch self {
+        case .agent: .agent
+        case .docker: .docker
+        case .dev: .dev
+        case .claude: nil
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .dev: "Dev"
+        case .claude: "Agentes Claude"
+        default: kind?.title ?? ""
+        }
+    }
+
+    var symbol: String { kind?.symbol ?? "sparkles" }
+}
+
+/// Conteúdo do popover: abas ⇄ detalhe, rodapé e toast.
+/// Tamanho fixo (UI.width × UI.bodyHeight + rodapé): trocar de aba ou abrir o detalhe não redimensiona a janela.
 struct RootView: View {
-    private let monitor = Monitor.shared
     @State private var selected: Item?
-    @State private var listHeight: CGFloat = 200
+    @AppStorage("selectedTab") private var tab: Tab = .agent
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .top) {
+            Group {
                 if let selected {
-                    DetailView(initial: selected) { go(nil) }
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .trailing).combined(with: .opacity)))
-                        .zIndex(1)
+                    DetailView(initial: selected) { self.selected = nil }
                 } else {
                     listPage
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .leading).combined(with: .opacity),
-                            removal: .move(edge: .leading).combined(with: .opacity)))
                 }
             }
+            .frame(width: UI.width, height: UI.bodyHeight, alignment: .top)
+            .overlay(alignment: .bottom) { ToastBar() }
             .clipped()
 
-            ToastBar()
             Divider().opacity(0.6)
             FooterView()
         }
         .frame(width: UI.width)
     }
 
-    private func go(_ item: Item?) {
-        withAnimation(UI.spring) { selected = item }
-    }
-
     private var listPage: some View {
         VStack(spacing: 0) {
             HeaderView()
+            TabBar(tab: $tab)
             Divider().opacity(0.6)
             ScrollView {
-                VStack(spacing: 10) {
-                    ForEach(Kind.allCases) { kind in
-                        SectionView(kind: kind) { go($0) }
+                Group {
+                    if let kind = tab.kind {
+                        SectionView(kind: kind) { selected = $0 }
+                    } else {
+                        Card { ClaudeAgentsTab() }
                     }
                 }
                 .padding(UI.pad)
-                .measureHeight { h in listHeight = h }
+                .frame(maxWidth: .infinity, alignment: .top)
             }
+            .id(tab) // cada aba começa no topo
             .scrollIndicators(.automatic)
-            .frame(height: min(max(listHeight, 80), UI.maxHeight - 110))
+            .frame(maxHeight: .infinity)
         }
+    }
+}
+
+// MARK: - Abas
+
+private struct TabBar: View {
+    @Binding var tab: Tab
+    private let monitor = Monitor.shared
+    @ObservedObject private var claude = ClaudeAgentsStore.shared
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(Tab.allCases.enumerated()), id: \.element) { idx, t in
+                let s = stats(t)
+                TabButton(tab: t, count: s.count, problem: s.problem, selected: tab == t) { tab = t }
+                    .keyboardShortcut(KeyEquivalent(Character(String(idx + 1))), modifiers: .command)
+            }
+        }
+        .padding(.horizontal, UI.pad)
+        .padding(.bottom, 8)
+    }
+
+    private func stats(_ t: Tab) -> (count: String, problem: Bool) {
+        if let kind = t.kind {
+            let items = monitor.items(kind)
+            let up = items.filter { $0.status.isUp || $0.status == .unhealthy }.count
+            let bad = items.contains { $0.status == .failed || $0.status == .unhealthy }
+            if kind == .docker && !monitor.dockerAvailable { return ("off", false) }
+            return (items.isEmpty ? "0" : "\(up)/\(items.count)", bad)
+        }
+        func walk(_ nodes: [ClaudeAgentNode]) -> (total: Int, failed: Bool) {
+            nodes.reduce((0, false)) { acc, n in
+                let c = walk(n.children)
+                return (acc.0 + 1 + c.total, acc.1 || n.state == .failed || c.failed)
+            }
+        }
+        let all = claude.sessions.map { walk($0.agents) }
+        let total = all.reduce(0) { $0 + $1.total }
+        let failed = all.contains { $0.failed }
+        let running = claude.runningCount
+        return (total == 0 ? "0" : "\(running)/\(total)", failed)
+    }
+}
+
+private struct TabButton: View {
+    let tab: Tab
+    let count: String
+    let problem: Bool
+    let selected: Bool
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                HStack(spacing: 4) {
+                    Image(systemName: tab.symbol)
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 14)
+                    Text(count)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .frame(minWidth: 26)
+                    // Espaço sempre reservado: o ponto não empurra nada quando aparece.
+                    Circle()
+                        .fill(Status.failed.color)
+                        .frame(width: 5, height: 5)
+                        .opacity(problem ? 1 : 0)
+                }
+                Text(tab.title)
+                    .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+            }
+            .foregroundStyle(selected ? Color.primary : Color.secondary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 38)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(selected ? 0.1 : (hover ? 0.05 : 0)))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(selected ? 0.1 : 0), lineWidth: 0.5)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help(problem ? "\(tab.title): há itens com problema" : tab.title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -59,7 +170,6 @@ struct RootView: View {
 
 private struct HeaderView: View {
     private let monitor = Monitor.shared
-    @State private var spin = 0.0
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
@@ -79,12 +189,10 @@ private struct HeaderView: View {
             }
             Spacer(minLength: 8)
 
-            IconButton(symbol: "arrow.clockwise", help: "Atualizar agora") {
+            IconButton(symbol: "arrow.clockwise",
+                       help: "Atualizar agora",
+                       tint: monitor.isRefreshing ? .accentColor : .secondary) {
                 monitor.refreshNow()
-            }
-            .rotationEffect(.degrees(spin))
-            .onChange(of: monitor.isRefreshing) { _, now in
-                if now { withAnimation(.easeInOut(duration: 0.6)) { spin += 360 } }
             }
 
             MoreMenu()
@@ -106,10 +214,8 @@ private struct HeaderView: View {
         }
         .font(.system(size: 11))
         .monospacedDigit()
+        .lineLimit(1)
         .foregroundStyle(.secondary)
-        .contentTransition(.numericText())
-        .animation(UI.spring, value: running)
-        .animation(UI.spring, value: problems)
     }
 }
 
@@ -160,6 +266,7 @@ private struct MoreMenu: View {
 
 // MARK: - Toast
 
+/// Sobreposto ao fundo da área de conteúdo: aparece sem empurrar a lista nem mudar a altura do popover.
 private struct ToastBar: View {
     private let monitor = Monitor.shared
 
@@ -175,7 +282,7 @@ private struct ToastBar: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     IconButton(symbol: "xmark", help: "Fechar", size: 18) {
-                        withAnimation(UI.spring) { monitor.toast = nil }
+                        monitor.toast = nil
                     }
                 }
                 .padding(.horizontal, 10)
@@ -186,10 +293,8 @@ private struct ToastBar: View {
                 .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
                 .padding(.horizontal, UI.pad)
                 .padding(.bottom, 8)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(UI.spring, value: monitor.toast)
         .task(id: monitor.toast) {
             guard let msg = monitor.toast else { return }
             try? await Task.sleep(for: .seconds(4))
@@ -212,7 +317,9 @@ private struct FooterView: View {
                         .frame(width: 5, height: 5)
                     Text(updatedText(now: ctx.date))
                         .monospacedDigit()
+                        .lineLimit(1)
                 }
+                .frame(minWidth: 130, alignment: .leading)
             }
             .font(.system(size: 10.5))
             .foregroundStyle(.secondary)

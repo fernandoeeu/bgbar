@@ -182,9 +182,10 @@ enum LaunchAgents {
         var lastSignal: String?
     }
 
-    static func state(_ label: String) async -> State {
+    /// nil se o `print` falhou (serviço não carregado, timeout…).
+    static func state(_ label: String) async -> State? {
         let r = await Shell.run("/bin/launchctl", ["print", "\(domain)/\(label)"], timeout: 3)
-        guard r.ok else { return State() }
+        guard r.ok else { return nil }
         return parsePrint(r.out)
     }
 
@@ -213,19 +214,38 @@ enum LaunchAgents {
         return s
     }
 
-    /// Labels carregados segundo `launchctl list` ("PID\tStatus\tLabel"). nil se falhou.
-    static func loadedLabels() async -> Set<String>? {
-        let r = await Shell.run("/bin/launchctl", ["list"], timeout: 3)
-        guard r.ok else { return nil }
-        return parseList(r.out)
+    struct ListEntry: Sendable, Equatable {
+        var pid: Int32?
+        var status: Int?
     }
 
-    static func parseList(_ out: String) -> Set<String> {
-        var s = Set<String>()
+    /// Serviços carregados segundo `launchctl list` ("PID\tStatus\tLabel"). nil se falhou.
+    static func loadedList() async -> [String: ListEntry]? {
+        let r = await Shell.run("/bin/launchctl", ["list"], timeout: 3)
+        guard r.ok else { return nil }
+        return parseListEntries(r.out)
+    }
+
+    static func parseList(_ out: String) -> Set<String> { Set(parseListEntries(out).keys) }
+
+    static func parseListEntries(_ out: String) -> [String: ListEntry] {
+        var map: [String: ListEntry] = [:]
         for line in out.split(separator: "\n") {
             let cols = line.split(separator: "\t", omittingEmptySubsequences: false)
             guard cols.count >= 3, cols[0] != "PID" else { continue }
-            s.insert(String(cols[2]))
+            map[String(cols[2])] = ListEntry(pid: Int32(cols[0]), status: Int(cols[1]))
+        }
+        return map
+    }
+
+    /// Estado de reserva a partir do `launchctl list`, quando o `print` falha mas o serviço
+    /// está carregado (evita marcar como "não carregado" e notificar queda falsa).
+    static func fallbackState(_ e: ListEntry) -> State {
+        var s = State()
+        s.loaded = true
+        s.pid = e.pid
+        if e.pid == nil, let st = e.status {
+            if st < 0 { s.lastSignal = "sinal \(-st)" } else { s.lastExit = st; s.lastExitText = String(st) }
         }
         return s
     }
@@ -242,13 +262,23 @@ enum LaunchAgents {
         let infos = plists()
         guard !infos.isEmpty else { return [] }
         // Um `launchctl list` evita um `print` por agent não carregado.
-        let loaded = await loadedLabels()
-        let states: [String: State] = await withTaskGroup(of: (String, State).self) { g in
-            for info in infos where loaded?.contains(info.label) ?? true {
-                g.addTask { (info.label, await state(info.label)) }
-            }
+        let loaded = await loadedList()
+        let wanted = infos.map(\.label).filter { loaded?[$0] != nil || loaded == nil }
+        // No máximo 6 `launchctl print` simultâneos (cada um ocupa threads da fila global).
+        let states: [String: State] = await withTaskGroup(of: (String, State?).self) { g in
             var out: [String: State] = [:]
-            for await (l, s) in g { out[l] = s }
+            var pending = wanted[...]
+            func store(_ label: String, _ st: State?) {
+                if let st { out[label] = st } else if let e = loaded?[label] { out[label] = fallbackState(e) }
+            }
+            for _ in 0..<6 {
+                guard let label = pending.popFirst() else { break }
+                g.addTask { (label, await state(label)) }
+            }
+            for await (l, s) in g {
+                store(l, s)
+                if let label = pending.popFirst() { g.addTask { (label, await state(label)) } }
+            }
             return out
         }
         return infos.map { item(info: $0, state: states[$0.label] ?? State(), procs: procs, ports: ports) }
@@ -326,7 +356,7 @@ enum Docker {
 
     /// nil = docker indisponível.
     static func collect() async -> [Item]? {
-        let r = await Shell.run("docker", ["ps", "-a", "--no-trunc", "--format", "{{json .}}"], timeout: 4)
+        let r = await Shell.run("docker", ["ps", "-a", "--no-trunc", "--format", "{{json .}}"], timeout: 6)
         guard r.ok else { return nil }
         let rows = parseRows(r.out)
 

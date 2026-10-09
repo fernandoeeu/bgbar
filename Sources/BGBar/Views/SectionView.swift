@@ -1,72 +1,26 @@
 import SwiftUI
 
-/// Seção de um `Kind`: cabeçalho colapsável + cartão com as linhas.
+/// Conteúdo de uma aba de `Kind`: cartão com as linhas, sem cabeçalho nem colapso.
 struct SectionView: View {
     let kind: Kind
     let onSelect: (Item) -> Void
     private let monitor = Monitor.shared
-    @AppStorage private var collapsed: Bool
-
-    init(kind: Kind, onSelect: @escaping (Item) -> Void) {
-        self.kind = kind
-        self.onSelect = onSelect
-        _collapsed = AppStorage(wrappedValue: false, "collapsed.\(kind.rawValue)")
-    }
 
     var body: some View {
         let items = monitor.items(kind)
         VStack(alignment: .leading, spacing: 6) {
-            header(items)
-            if !collapsed {
-                Card {
-                    content(items)
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+            Card {
+                content(items)
             }
-        }
-    }
-
-    private func header(_ items: [Item]) -> some View {
-        let up = items.filter { $0.status.isUp || $0.status == .unhealthy }.count
-        let bad = items.filter { $0.status == .failed || $0.status == .unhealthy }.count
-        return Button {
-            withAnimation(UI.spring) { collapsed.toggle() }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: kind.symbol)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
-                Text(kind.title)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.85))
-                Text(items.isEmpty ? "0" : "\(up)/\(items.count)")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+            let hidden = monitor.hiddenCount(kind)
+            if hidden > 0, !monitor.showHidden {
+                Text("\(hidden) oculto\(hidden == 1 ? "" : "s") · mostre em ⋯ › Mostrar ocultos")
+                    .font(.system(size: 10))
                     .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Capsule().fill(Color.primary.opacity(0.07)))
-                    .contentTransition(.numericText())
-                if bad > 0 {
-                    Circle().fill(Status.failed.color).frame(width: 5, height: 5)
-                }
-                Spacer()
-                let hidden = monitor.hiddenCount(kind)
-                if hidden > 0, !monitor.showHidden {
-                    Text("\(hidden) oculto\(hidden == 1 ? "" : "s")")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                }
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(collapsed ? 0 : 90))
+                    .padding(.horizontal, 4)
             }
-            .padding(.horizontal, 4)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
     }
 
     @ViewBuilder

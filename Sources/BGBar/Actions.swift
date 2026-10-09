@@ -11,86 +11,132 @@ enum Actions {
     static func canStart(_ item: Item) -> Bool { item.kind != .dev && !item.status.isUp && !item.isGhost }
     static func canStop(_ item: Item) -> Bool { item.kind != .dev && (item.status.isUp || item.status == .unhealthy || item.status == .restarting) }
     static func canRestart(_ item: Item) -> Bool { item.kind != .dev && !item.isGhost && item.status != .notLoaded }
-    static func canKill(_ item: Item) -> Bool { item.pid != nil }
+    static func canKill(_ item: Item) -> Bool { (item.pid ?? 0) > 1 && !item.isGhost }
     static func hasLog(_ item: Item) -> Bool { item.kind == .docker || !item.logPaths.isEmpty }
 
-    // MARK: Start / stop / restart
+    // MARK: Execução (ponto único: busy + supressão + toast + refresh)
 
-    static func start(_ item: Item) async {
+    enum Op: Equatable {
+        case start, stop, restart, kill(force: Bool)
+        /// Ops que derrubam o item: a queda não deve virar notificação.
+        var suppressesDrop: Bool { self != .start }
+    }
+
+    /// Entrada recomendada para a UI (dispara e esquece). Ignora clique repetido enquanto
+    /// o item está ocupado. Confirmações (kill, parar, reiniciar) ficam na UI, antes daqui.
+    static func run(_ op: Op, on item: Item) {
+        guard !Monitor.shared.busy.contains(item.id) else { return }
+        Monitor.shared.busy.insert(item.id) // marca já, antes do Task começar
+        Task { @MainActor in await perform(op, item) }
+    }
+
+    // API antiga, mantida para a UI atual (`Run.perform`) compilar. Cada uma faz o ciclo
+    // completo sozinha; quem chama NÃO precisa (nem deve) mexer em busy/supressão/refresh.
+    static func start(_ item: Item) async { await perform(.start, item) }
+    static func stop(_ item: Item) async { await perform(.stop, item) }
+    static func restart(_ item: Item) async { await perform(.restart, item) }
+    /// A UI já pediu confirmação antes de chamar.
+    static func kill(_ item: Item, force: Bool = false) async { await perform(.kill(force: force), item) }
+
+    /// Único lugar que mexe em busy, supressão de notificação, toast e refresh.
+    private static func perform(_ op: Op, _ item: Item) async {
+        let monitor = Monitor.shared
+        monitor.busy.insert(item.id)
+        if op.suppressesDrop { monitor.suppressNotifications(for: item.id, seconds: 30) }
+        let message = await execute(op, item)
+        // `docker stop` pode levar até ~10 s: estende a janela a partir do fim da ação.
+        if op.suppressesDrop { monitor.suppressNotifications(for: item.id, seconds: 15) }
+        monitor.busy.remove(item.id)
+        if let message { toast(message) }
+        monitor.refreshNow()
+    }
+
+    private static func execute(_ op: Op, _ item: Item) async -> String? {
+        switch op {
+        case .start: await doStart(item)
+        case .stop: await doStop(item)
+        case .restart: await doRestart(item)
+        case .kill(let force): await doKill(item, force: force)
+        }
+    }
+
+    private static func doStart(_ item: Item) async -> String? {
         switch item.kind {
         case .agent:
-            guard let target = agentTarget(item) else { return }
             if item.status == .notLoaded {
-                guard let plist = item.plistPath else {
-                    toast("Sem plist para \(item.name)")
-                    return
-                }
-                await perform(item, verb: "iniciar", done: "\(item.name) iniciado", suppress: false) {
-                    await bootstrap(plist)
-                }
-            } else {
-                await perform(item, verb: "iniciar", done: "\(item.name) iniciado", suppress: false) {
-                    await launchctl(["kickstart", target])
-                }
+                guard let plist = item.plistPath else { return "Sem plist para \(item.name)" }
+                return report(await bootstrap(plist), item, verb: "iniciar", done: "\(item.name) iniciado")
             }
+            guard let target = agentTarget(item) else { return "Sem label para \(item.name)" }
+            return report(await launchctl(["kickstart", target]), item, verb: "iniciar", done: "\(item.name) iniciado")
         case .docker:
-            await docker(item, "start", verb: "iniciar", done: "\(item.name) iniciado", suppress: false)
+            return await docker(item, "start", verb: "iniciar", done: "\(item.name) iniciado")
         case .dev:
-            break
+            return nil
         }
     }
 
-    static func stop(_ item: Item) async {
+    private static func doStop(_ item: Item) async -> String? {
         switch item.kind {
         case .agent:
-            guard let target = agentTarget(item) else { return }
-            await perform(item, verb: "parar", done: "\(item.name) parado") {
-                await launchctl(["bootout", target])
-            }
+            guard let target = agentTarget(item) else { return "Sem label para \(item.name)" }
+            return report(await launchctl(["bootout", target]), item, verb: "parar", done: "\(item.name) parado")
         case .docker:
-            await docker(item, "stop", verb: "parar", done: "\(item.name) parado")
+            return await docker(item, "stop", verb: "parar", done: "\(item.name) parado")
         case .dev:
-            break
+            return nil
         }
     }
 
-    static func restart(_ item: Item) async {
+    private static func doRestart(_ item: Item) async -> String? {
         switch item.kind {
         case .agent:
-            guard let target = agentTarget(item) else { return }
             if item.status == .notLoaded, let plist = item.plistPath {
-                await perform(item, verb: "reiniciar", done: "\(item.name) iniciado") {
-                    await bootstrap(plist)
-                }
-            } else {
-                await perform(item, verb: "reiniciar", done: "\(item.name) reiniciado") {
-                    await launchctl(["kickstart", "-k", target])
-                }
+                return report(await bootstrap(plist), item, verb: "reiniciar", done: "\(item.name) iniciado")
             }
+            guard let target = agentTarget(item) else { return "Sem label para \(item.name)" }
+            return report(await launchctl(["kickstart", "-k", target]), item, verb: "reiniciar", done: "\(item.name) reiniciado")
         case .docker:
-            await docker(item, "restart", verb: "reiniciar", done: "\(item.name) reiniciado")
+            return await docker(item, "restart", verb: "reiniciar", done: "\(item.name) reiniciado")
         case .dev:
-            break
+            return nil
         }
     }
 
     /// SIGTERM (ou SIGKILL se force). A UI já pediu confirmação antes de chamar.
-    static func kill(_ item: Item, force: Bool = false) async {
-        guard let pid = item.pid, pid > 1 else {
-            toast("\(item.name) não tem PID")
-            return
+    /// Recusa PID ≤ 1, o próprio BGBar, processo de outro usuário e PID reaproveitado
+    /// (início do processo atual diferente do que a lista mostrava).
+    private static func doKill(_ item: Item, force: Bool) async -> String {
+        guard let pid = item.pid, pid > 1, pid != getpid() else {
+            return "\(item.name) não tem PID válido"
         }
-        let monitor = Monitor.shared
-        monitor.suppressNotifications(for: item.id)
+        guard let info = processInfo(pid) else {
+            return "\(item.name) (PID \(pid)) já não existe"
+        }
+        guard info.uid == getuid() else {
+            return "PID \(pid) não é seu; não encerrei"
+        }
+        if let expected = item.startedAt, abs(info.start.timeIntervalSince(expected)) > 5 {
+            return "PID \(pid) agora é outro processo; não encerrei"
+        }
         let signal = force ? SIGKILL : SIGTERM
-        if Darwin.kill(pid, signal) == 0 {
-            toast("\(force ? "SIGKILL" : "SIGTERM") enviado para \(item.name) (PID \(pid))")
-        } else {
-            let msg = String(cString: strerror(errno))
-            toast("Falha ao encerrar \(item.name): \(msg)")
+        guard Darwin.kill(pid, signal) == 0 else {
+            return "Falha ao encerrar \(item.name): \(String(cString: strerror(errno)))"
         }
         try? await Task.sleep(for: .milliseconds(400))
-        monitor.refreshNow()
+        return "\(force ? "SIGKILL" : "SIGTERM") enviado para \(item.name) (PID \(pid))"
+    }
+
+    /// Dono e hora de início de um PID via sysctl (sem processo externo).
+    nonisolated static func processInfo(_ pid: Int32) -> (uid: uid_t, start: Date)? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0,
+              info.kp_proc.p_pid == pid else { return nil }
+        let tv = info.kp_proc.p_un.__p_starttime
+        let start = Date(timeIntervalSince1970: TimeInterval(tv.tv_sec) + TimeInterval(tv.tv_usec) / 1_000_000)
+        return (info.kp_eproc.e_ucred.cr_uid, start)
     }
 
     // MARK: Utilidades simples
@@ -184,10 +230,7 @@ enum Actions {
     private static var domain: String { "gui/\(getuid())" }
 
     private static func agentTarget(_ item: Item) -> String? {
-        guard let label = item.label, !label.isEmpty else {
-            toast("Sem label para \(item.name)")
-            return nil
-        }
+        guard let label = item.label, !label.isEmpty else { return nil }
         return "\(domain)/\(label)"
     }
 
@@ -199,32 +242,13 @@ enum Actions {
         await launchctl(["bootstrap", domain, plist])
     }
 
-    private static func docker(_ item: Item, _ cmd: String, verb: String, done: String, suppress: Bool = true) async {
-        guard let id = item.containerID else {
-            toast("Container sem ID: \(item.name)")
-            return
-        }
-        await perform(item, verb: verb, done: done, suppress: suppress) {
-            await Shell.run("docker", [cmd, id], timeout: 35)
-        }
+    private static func docker(_ item: Item, _ cmd: String, verb: String, done: String) async -> String {
+        guard let id = item.containerID else { return "Container sem ID: \(item.name)" }
+        return report(await Shell.run("docker", [cmd, id], timeout: 35), item, verb: verb, done: done)
     }
 
-    /// Marca o item como ocupado, roda o comando, mostra toast e atualiza.
-    private static func perform(
-        _ item: Item, verb: String, done: String, suppress: Bool = true,
-        _ op: () async -> Shell.Result
-    ) async {
-        let monitor = Monitor.shared
-        if suppress { monitor.suppressNotifications(for: item.id, seconds: 30) }
-        monitor.busy.insert(item.id)
-        let r = await op()
-        monitor.busy.remove(item.id)
-        if r.ok {
-            toast(done)
-        } else {
-            toast("Falha ao \(verb) \(item.name): \(errorText(r))")
-        }
-        monitor.refreshNow()
+    private static func report(_ r: Shell.Result, _ item: Item, verb: String, done: String) -> String {
+        r.ok ? done : "Falha ao \(verb) \(item.name): \(errorText(r))"
     }
 
     private static func errorText(_ r: Shell.Result) -> String {
