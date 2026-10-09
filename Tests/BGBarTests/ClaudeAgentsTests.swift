@@ -88,6 +88,47 @@ final class ClaudeAgentsTests: XCTestCase {
         XCTAssertEqual(pai.children.first?.children.first?.state, .done)
         XCTAssertEqual(pai.children.first?.children.first?.depth, 3)
     }
+
+    func testCycleBecomesRoots() throws {
+        // Unidade: A→B→A vira raízes; C pendurado no ciclo continua filho de A; pai inexistente vira raiz.
+        let p = ClaudeAgentsScanner.resolveParents(["a": "b", "b": "a", "c": "a", "d": "zz", "e": "e", "f": nil])
+        XCTAssertEqual(p["a"], .some(nil))
+        XCTAssertEqual(p["b"], .some(nil))
+        XCTAssertEqual(p["c"], .some("a"))
+        XCTAssertEqual(p["d"], .some(nil))
+        XCTAssertEqual(p["e"], .some(nil))
+        XCTAssertEqual(p["f"], .some(nil))
+
+        // Integração: os agentes do ciclo aparecem na árvore.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bgbar-claude-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sid = "99999999-2222-3333-4444-555555555555"
+        let sub = root.appendingPathComponent("-tmp-ciclo").appendingPathComponent(sid).appendingPathComponent("subagents")
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        for (id, parent) in [("a", "b"), ("b", "a"), ("c", "a")] {
+            try JSONSerialization.data(withJSONObject: ["agentType": "x", "description": id, "parentAgentId": parent])
+                .write(to: sub.appendingPathComponent("agent-\(id).meta.json"))
+            try assistant("2026-10-09T16:00:00Z", content: [["type": "tool_use", "id": id, "name": "Bash"]])
+                .write(to: sub.appendingPathComponent("agent-\(id).jsonl"))
+        }
+        let s = try XCTUnwrap(ClaudeAgentsScanner(root: root).scan().first)
+        XCTAssertEqual(Set(s.agents.map(\.id)), ["a", "b"])
+        XCTAssertEqual(s.agents.first { $0.id == "a" }?.children.map(\.id), ["c"])
+        XCTAssertEqual(s.agents.first { $0.id == "b" }?.children.map(\.id), [])
+    }
+
+    func testTranscriptTailSurvivesCutInsideMultibyteChar() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("bgbar-tail-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let first = line(["type": "user", "message": ["role": "user", "content": "ação é ótima"]])
+        let second = line(["type": "user", "message": ["role": "user", "content": "segunda linha"]])
+        try (first + second).write(to: url)
+        // Janela que começa no meio do "ç" (2 bytes) da primeira linha.
+        let cut = first.range(of: Data("ç".utf8))!.lowerBound + 1
+        let window = UInt64(first.count + second.count - cut)
+        let out = TranscriptTail.render(url, lines: 10, window: window)
+        XCTAssertEqual(out, "› segunda linha")
+    }
 }
 
 /// Imprime a árvore real (somente leitura). Só roda com BGBAR_LIVE=1.

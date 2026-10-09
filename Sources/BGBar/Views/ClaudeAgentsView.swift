@@ -9,6 +9,14 @@ struct ClaudeAgentsTab: View {
     @State private var logOpen: String?
 
     var body: some View {
+        // Relógio único da aba: as linhas recebem `now` em vez de cada uma ter o seu TimelineView.
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            content(now: ctx.date)
+        }
+    }
+
+    @ViewBuilder
+    private func content(now: Date) -> some View {
         let sessions = store.sessions
         VStack(alignment: .leading, spacing: 6) {
             if sessions.isEmpty {
@@ -21,7 +29,7 @@ struct ClaudeAgentsTab: View {
                         if idx > 0 {
                             Divider().padding(.horizontal, 8).opacity(0.5)
                         }
-                        sessionBlock(session)
+                        sessionBlock(session, now: now)
                     }
                 }
                 .padding(3)
@@ -41,9 +49,9 @@ struct ClaudeAgentsTab: View {
     // MARK: Sessão
 
     @ViewBuilder
-    private func sessionBlock(_ session: ClaudeSession) -> some View {
+    private func sessionBlock(_ session: ClaudeSession, now: Date) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            SessionHeader(session: session)
+            SessionHeader(session: session, now: now)
             if session.agents.isEmpty {
                 Text("Só a conversa principal, sem subagentes.")
                     .font(.system(size: 10.5))
@@ -54,6 +62,7 @@ struct ClaudeAgentsTab: View {
                 VStack(spacing: 0) {
                     ForEach(Self.rows(session.agents)) { row in
                         AgentRow(row: row,
+                                 now: now,
                                  logOpen: logOpen == row.agent.id,
                                  onToggleLog: { toggleLog(row.agent.id) })
                     }
@@ -110,6 +119,7 @@ private enum Tree {
 
 private struct SessionHeader: View {
     let session: ClaudeSession
+    let now: Date
     @State private var copied = false
 
     var body: some View {
@@ -125,14 +135,12 @@ private struct SessionHeader: View {
             if session.runningAgents > 0 {
                 Chip(text: "\(session.runningAgents) rodando", tint: ClaudeAgentState.running.tint)
             }
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                Text(ClaudeFmt.ago(session.lastActivityAt, now: ctx.date))
-                    .font(.system(size: 10))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(minWidth: 52, alignment: .trailing)
-            }
+            Text(ClaudeFmt.ago(session.lastActivityAt, now: now))
+                .font(.system(size: 10))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(minWidth: 52, alignment: .trailing)
             .help("Última atividade: " + session.lastActivityAt.formatted(date: .abbreviated, time: .standard))
             RowAction(symbol: copied ? "checkmark" : "doc.on.doc",
                       help: "Copiar ID da sessão") {
@@ -158,6 +166,7 @@ private struct SessionHeader: View {
 
 private struct AgentRow: View {
     let row: TreeRow
+    let now: Date
     let logOpen: Bool
     let onToggleLog: () -> Void
     @State private var hover = false
@@ -220,9 +229,7 @@ private struct AgentRow: View {
     private var chips: some View {
         HStack(spacing: 4) {
             Chip(text: agent.state.chipLabel, tint: agent.state.tint)
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                LiveChip(text: Fmt.uptime(agent.runTime(now: ctx.date)), symbol: "clock", minWidth: 38)
-            }
+            LiveChip(text: Fmt.uptime(agent.runTime(now: now)), symbol: "clock", minWidth: 38)
             if agent.totalTokens > 0 {
                 LiveChip(text: ClaudeFmt.tokens(agent.totalTokens), symbol: "circle.hexagongrid", minWidth: 30)
                     .help("\(agent.totalTokens.formatted()) tokens neste agente · \(agent.treeTokens.formatted()) com os filhos")
@@ -502,15 +509,18 @@ enum TranscriptTail {
         await Task.detached(priority: .utility) { render(url, lines: lines) }.value
     }
 
-    private static func render(_ url: URL, lines: Int) -> String {
+    /// `window`: quantos bytes do fim são lidos (exposto para testes).
+    static func render(_ url: URL, lines: Int, window: UInt64 = 512 * 1024) -> String {
         guard let fh = try? FileHandle(forReadingFrom: url) else { return "" }
         defer { try? fh.close() }
         let size = (try? fh.seekToEnd()) ?? 0
-        let window: UInt64 = 512 * 1024
         try? fh.seek(toOffset: size > window ? size - window : 0)
-        guard let data = try? fh.readToEnd(), let raw = String(data: data, encoding: .utf8) else { return "" }
-        var rows = raw.split(separator: "\n", omittingEmptySubsequences: true)
-        if size > window, !rows.isEmpty { rows.removeFirst() } // linha cortada no meio
+        guard let data = try? fh.readToEnd() else { return "" }
+        // Decodificação tolerante: um corte no meio de um caractere UTF-8 vira U+FFFD em vez de zerar tudo.
+        let raw = String(decoding: data, as: UTF8.self)
+        var rows = raw.split(separator: "\n", omittingEmptySubsequences: false)
+        // Janela cortada: a primeira linha é parcial (e pode conter o caractere quebrado).
+        if size > window, !rows.isEmpty { rows.removeFirst() }
         var out: [String] = []
         let time = Date.FormatStyle(date: .omitted, time: .standard)
         let iso = ISO8601DateFormatter()

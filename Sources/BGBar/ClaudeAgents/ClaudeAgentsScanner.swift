@@ -41,18 +41,26 @@ final class ClaudeAgentsScanner {
     func scan(now: Date = Date()) -> [ClaudeSession] {
         var out: [ClaudeSession] = []
         var seenTranscripts = Set<String>()
+        var seenMetas = Set<String>()
         let projects = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey],
                                                      options: [.skipsHiddenFiles])) ?? []
         for project in projects where isDir(project) {
             for (sessionId, mainURL, subDir) in candidateSessions(in: project, now: now) {
+                var transcripts = Set<String>(), metaPaths = Set<String>()
                 if let s = buildSession(id: sessionId, project: project, mainURL: mainURL, subDir: subDir,
-                                        now: now, seen: &seenTranscripts) {
+                                        now: now, seenTranscripts: &transcripts, seenMetas: &metaPaths) {
                     out.append(s)
+                    // Só sessões exibidas seguram cache; as que saíram da janela são liberadas abaixo.
+                    seenTranscripts.formUnion(transcripts)
+                    seenMetas.formUnion(metaPaths)
                 }
             }
         }
-        // Libera leitores de arquivos que saíram da janela.
+        // Libera caches (leitores com offset, metas, cwd) de arquivos/sessões que saíram da janela ou sumiram.
         readers = readers.filter { seenTranscripts.contains($0.key) }
+        metas = metas.filter { seenMetas.contains($0.key) }
+        let liveSessions = Set(out.map(\.id))
+        sessionCwd = sessionCwd.filter { liveSessions.contains($0.key) }
         return out.sorted { $0.lastActivityAt > $1.lastActivityAt }
     }
 
@@ -73,7 +81,7 @@ final class ClaudeAgentsScanner {
     }
 
     private func buildSession(id: String, project: URL, mainURL: URL, subDir: URL, now: Date,
-                              seen: inout Set<String>) -> ClaudeSession? {
+                              seenTranscripts: inout Set<String>, seenMetas: inout Set<String>) -> ClaudeSession? {
         guard let files = try? fm.contentsOfDirectory(atPath: subDir.path) else { return nil }
         struct Flat { var meta: Meta; var node: ClaudeAgentNode; var summary: ClaudeTranscriptSummary; var mtime: Date }
         var flat: [String: Flat] = [:]
@@ -83,10 +91,11 @@ final class ClaudeAgentsScanner {
             let metaURL = subDir.appendingPathComponent(f)
             let jsonl = subDir.appendingPathComponent("agent-\(agentId).jsonl")
             guard let meta = loadMeta(metaURL) else { continue }
+            seenMetas.insert(metaURL.path)
             let mt = mtime(jsonl) ?? mtime(metaURL) ?? now
             let reader = readers[jsonl.path] ?? ClaudeTranscriptReader(url: jsonl)
             readers[jsonl.path] = reader
-            seen.insert(jsonl.path)
+            seenTranscripts.insert(jsonl.path)
             reader.update()
             let s = reader.summary
             let node = ClaudeAgentNode(
@@ -107,11 +116,11 @@ final class ClaudeAgentsScanner {
         }
         guard !flat.isEmpty else { return nil }
 
-        // Monta a árvore (pais desconhecidos viram raízes).
+        // Monta a árvore (pais desconhecidos e nós em ciclo viram raízes).
+        let parents = Self.resolveParents(flat.mapValues { $0.meta.parentAgentId })
         var childrenOf: [String?: [String]] = [:]
-        for (id, f) in flat {
-            let parent = f.meta.parentAgentId.flatMap { flat[$0] != nil && $0 != id ? $0 : nil }
-            childrenOf[parent, default: []].append(id)
+        for id in flat.keys {
+            childrenOf[parents[id] ?? nil, default: []].append(id)
         }
         var visiting = Set<String>()
         func build(_ id: String, depth: Int) -> ClaudeAgentNode {
@@ -137,6 +146,26 @@ final class ClaudeAgentsScanner {
         guard now.timeIntervalSince(last) <= thresholds.window else { return nil }
         return ClaudeSession(id: id, projectName: projectName(sessionId: id, mainURL: mainURL, project: project),
                              lastActivityAt: last, agents: roots)
+    }
+
+    /// Pai efetivo de cada agente: nil quando o pai é desconhecido, é o próprio nó ou o nó está num ciclo
+    /// (A→B→A). Nós pendurados num ciclo continuam filhos do nó do ciclo, que vira raiz.
+    static func resolveParents(_ declared: [String: String?]) -> [String: String?] {
+        var out: [String: String?] = [:]
+        for (id, p) in declared {
+            guard let p, p != id, declared[p] != nil else { out[id] = .some(nil); continue }
+            // Sobe a cadeia; se voltar ao próprio nó, ele está num ciclo.
+            var cur: String? = p
+            var steps = 0
+            var inCycle = false
+            while let c = cur, steps <= declared.count {
+                if c == id { inCycle = true; break }
+                cur = declared[c] ?? nil
+                steps += 1
+            }
+            out[id] = .some(inCycle ? nil : p)
+        }
+        return out
     }
 
     // MARK: - Regras de estado
