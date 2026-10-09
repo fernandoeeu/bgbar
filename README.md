@@ -50,7 +50,7 @@ As ações usam as mesmas ferramentas: `launchctl` para agentes, `docker` para c
 
 ## Máquinas Linux por SSH
 
-Em ⋯ › **Máquinas SSH…** dá para conectar máquinas Linux e ver o segundo plano delas nas mesmas abas, junto com o do Mac (cada item remoto mostra a máquina ao lado do nome). O destino é o que você passaria ao `ssh`: um alias do `~/.ssh/config`, `host` ou `usuário@host`.
+Em ⋯ › **Máquinas SSH…** dá para conectar máquinas Linux e ver o segundo plano delas nas mesmas abas, junto com o do Mac. A lista de cada aba vem separada por máquina ("Este Mac" e cada host, com cabeçalho), e a barra abaixo das abas filtra tudo (listas, contagens e resumo) por máquina: Todas, Este Mac ou um host. O ícone da barra de menus continua refletindo todas as máquinas. O destino é o que você passaria ao `ssh`: um alias do `~/.ssh/config`, `host` ou `usuário@host`.
 
 | No Mac | Na máquina Linux | Coleta |
 | --- | --- | --- |

@@ -58,6 +58,7 @@ struct RootView: View {
         VStack(spacing: 0) {
             HeaderView { showHosts = true }
             TabBar(tab: $tab)
+            MachineBar()
             Divider().opacity(0.6)
             ScrollView {
                 Group {
@@ -120,6 +121,52 @@ private struct TabBar: View {
         let failed = all.contains { $0.failed }
         let running = claude.runningCount
         return (total == 0 ? "0" : "\(running)/\(total)", failed ? Status.failed.color : nil)
+    }
+}
+
+// MARK: - Filtro de máquina
+
+/// Filtro global por máquina (só aparece com máquinas SSH configuradas).
+private struct MachineBar: View {
+    private let monitor = Monitor.shared
+
+    var body: some View {
+        if !monitor.hosts.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    pill("Todas", symbol: "square.stack.3d.up", value: "")
+                    pill("Este Mac", symbol: "laptopcomputer", value: Monitor.thisMac)
+                    ForEach(monitor.hosts, id: \.self) { host in
+                        pill(host, symbol: "server.rack", value: host, offline: monitor.offlineHosts.contains(host))
+                    }
+                }
+                .padding(.horizontal, UI.pad)
+            }
+            .padding(.bottom, 8)
+        }
+    }
+
+    private func pill(_ title: String, symbol: String, value: String, offline: Bool = false) -> some View {
+        let selected = monitor.machine == value
+        return Button { monitor.machine = value } label: {
+            HStack(spacing: 4) {
+                Image(systemName: symbol).font(.system(size: 9.5, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
+                    .lineLimit(1)
+                if offline {
+                    Circle().fill(Status.failed.color).frame(width: 5, height: 5)
+                }
+            }
+            .foregroundStyle(selected ? Color.primary : Color.secondary)
+            .padding(.horizontal, 9)
+            .frame(height: 22)
+            .background(Capsule(style: .continuous).fill(Color.primary.opacity(selected ? 0.12 : 0.04)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(offline ? "\(title): fora do ar" : (value.isEmpty ? "Mostrar todas as máquinas" : "Mostrar só \(title)"))
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

@@ -16,6 +16,13 @@ final class Monitor {
         didSet { UserDefaults.standard.set(hosts, forKey: "remoteHosts") }
     }
     private(set) var remote: [String: RemoteHost] = [:]
+    /// Filtro global por máquina: "" = todas, `thisMac` ou um host remoto.
+    /// Vale para listas, contagens e cabeçalho; o ícone da barra continua olhando tudo.
+    var machine: String {
+        didSet { UserDefaults.standard.set(machine, forKey: "machineFilter") }
+    }
+    /// Valor de `machine` para "só este Mac" ("*" não é válido em destino ssh).
+    static let thisMac = "*mac"
     private(set) var lastUpdate: Date?
     private(set) var isRefreshing = false
     /// Mensagem transitória para a UI (erro/sucesso de ação).
@@ -50,7 +57,10 @@ final class Monitor {
     private init() {
         let d = UserDefaults.standard
         showHidden = d.bool(forKey: "showHidden")
-        hosts = (d.stringArray(forKey: "remoteHosts") ?? []).filter(Remote.isValidHost)
+        let saved = (d.stringArray(forKey: "remoteHosts") ?? []).filter(Remote.isValidHost)
+        hosts = saved
+        let filter = d.string(forKey: "machineFilter") ?? ""
+        machine = filter == Self.thisMac || saved.contains(filter) ? filter : ""
         pinned = Set(d.stringArray(forKey: "pinned") ?? [])
         hidden = Set(d.stringArray(forKey: "hidden") ?? [])
         pinnedMeta = (d.dictionary(forKey: "pinnedMeta") as? [String: [String]]) ?? [:]
@@ -169,6 +179,7 @@ final class Monitor {
     func removeHost(_ host: String) {
         remoteLoops.removeValue(forKey: host)?.cancel()
         hosts.removeAll { $0 == host }
+        if machine == host || hosts.isEmpty { machine = "" }
         remote[host] = nil
     }
 
@@ -304,8 +315,18 @@ final class Monitor {
 
     /// Itens visíveis da seção, ordenados: fixados, problemas, rodando, resto.
     /// Inclui linhas fantasma de fixados que não estão presentes.
-    func items(_ kind: Kind) -> [Item] {
-        var list = all(kind).filter { showHidden || !hidden.contains($0.key) }
+    func items(_ kind: Kind) -> [Item] { items(kind, machine: machine) }
+
+    /// Itens do tipo na máquina pedida ("" = todas).
+    private func scoped(_ kind: Kind, machine: String) -> [Item] {
+        let list = all(kind)
+        guard !hosts.isEmpty, !machine.isEmpty else { return list }
+        let host = machine == Self.thisMac ? nil : machine
+        return list.filter { $0.host == host }
+    }
+
+    private func items(_ kind: Kind, machine: String) -> [Item] {
+        var list = scoped(kind, machine: machine).filter { showHidden || !hidden.contains($0.key) }
         let presentKeys = Set(all(kind).map(\.key))
         for key in pinned where !presentKeys.contains(key) {
             guard let meta = pinnedMeta[key], meta.count >= 4, meta[0] == kind.rawValue else { continue }
@@ -316,6 +337,7 @@ final class Monitor {
                 guard remote[meta[4]]?.online == true else { continue }
                 ghost.host = meta[4]
             }
+            if !hosts.isEmpty, !machine.isEmpty, ghost.host != (machine == Self.thisMac ? nil : machine) { continue }
             ghost.statusNote = "não encontrado"
             ghost.isGhost = true
             list.append(ghost)
@@ -340,7 +362,7 @@ final class Monitor {
 
     func hiddenCount(_ kind: Kind? = nil) -> Int {
         let kinds = kind.map { [$0] } ?? Kind.allCases
-        return kinds.reduce(0) { $0 + all($1).filter { hidden.contains($0.key) }.count }
+        return kinds.reduce(0) { $0 + scoped($1, machine: machine).filter { hidden.contains($0.key) }.count }
     }
 
     /// Busca também entre ocultos (o detalhe não pode "sumir" ao ocultar o item) e fantasmas.
@@ -351,8 +373,10 @@ final class Monitor {
     }
 
     /// Itens que contam como problema para o indicador da barra.
-    var problems: [Item] {
-        Kind.allCases.flatMap { items($0) }.filter { i in
+    var problems: [Item] { problems(machine: machine) }
+
+    private func problems(machine: String) -> [Item] {
+        Kind.allCases.flatMap { items($0, machine: machine) }.filter { i in
             if hidden.contains(i.key) { return false }
             let isPinned = pinned.contains(i.key)
             switch i.status {
@@ -367,6 +391,9 @@ final class Monitor {
     }
 
     var health: Health { Self.health(of: problems) }
+
+    /// Saúde de todas as máquinas, ignorando o filtro (ícone da barra de menus).
+    var overallHealth: Health { Self.health(of: problems(machine: "")) }
 
     /// Saúde só de uma aba: o ponto da aba acende pelos mesmos critérios do cabeçalho.
     func health(_ kind: Kind) -> Health { Self.health(of: problems.filter { $0.kind == kind }) }
