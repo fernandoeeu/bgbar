@@ -82,7 +82,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSHumanReadableCopyright</key>
-  <string>Copyright © $(date +%Y) Fernando Antonio. Todos os direitos reservados.</string>
+  <string>Copyright © $(date +%Y) Fernando Antonio. Licença MIT.</string>
 </dict>
 </plist>
 PLIST

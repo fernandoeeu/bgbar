@@ -76,3 +76,7 @@ swift build        # build de debug
 swift run BGBar    # roda sem bundle (notificações e login item não funcionam fora do .app)
 swift test         # testes
 ```
+
+## Licença
+
+MIT. Veja [LICENSE](LICENSE).

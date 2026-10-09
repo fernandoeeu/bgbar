@@ -687,7 +687,7 @@ enum Summarize {
         return nil
     }
 
-    /// Nome do projeto: raiz do repositório que contém o cwd (monorepo: "dudata-hub", não "backend");
+    /// Nome do projeto: raiz do repositório que contém o cwd (monorepo: "web", não "backend");
     /// sem repositório, a última pasta do cwd; sem cwd útil, o script.
     static func projectName(cwd: String?, args: [String], repoRoot: (String) -> String? = Summarize.repoRoot) -> String {
         if let cwd, cwd != "/", cwd != NSHomeDirectory() {

@@ -16,7 +16,7 @@ final class ProcTableTests: XCTestCase {
     func testParseKeepsCommandWithSpaces() {
         let out = """
           353     1    22:28:44   0.0  92256 /Applications/Some App.app/Contents/MacOS/Some App --flag
-        45649     1       07:31   1.5  29744 /Users/u/.bun/bin/bun run scripts/llm-bridge.ts
+        45649     1       07:31   1.5  29744 /Users/u/.bun/bin/bun run scripts/worker.ts
         garbage line
         """
         let t = ProcTable.parse(out)
@@ -26,7 +26,7 @@ final class ProcTableTests: XCTestCase {
         XCTAssertEqual(p.elapsed, 451)
         XCTAssertEqual(p.cpu, 1.5)
         XCTAssertEqual(p.rssKB, 29744)
-        XCTAssertEqual(p.command, "/Users/u/.bun/bin/bun run scripts/llm-bridge.ts")
+        XCTAssertEqual(p.command, "/Users/u/.bun/bin/bun run scripts/worker.ts")
         XCTAssertEqual(p.execName, "bun")
         XCTAssertEqual(t.byPID[353]!.command, "/Applications/Some App.app/Contents/MacOS/Some App --flag")
         XCTAssertEqual(t.children[1]?.sorted(), [353, 45649])
@@ -85,10 +85,10 @@ final class LaunchAgentsTests: XCTestCase {
     \targuments = {
     \t\t/Users/u/.bun/bin/bun
     \t\trun
-    \t\tscripts/llm-bridge.ts
+    \t\tscripts/worker.ts
     \t}
 
-    \tworking directory = /Users/u/code/polybot
+    \tworking directory = /Users/u/code/myapp
 
     \tenvironment = {
     \t\tFOO = bar
@@ -157,13 +157,13 @@ final class LaunchAgentsTests: XCTestCase {
     }
 
     private let info = LaunchAgents.Info(
-        label: "com.example.polybot.bridge", plistPath: "/p.plist",
-        program: ["/Users/u/.bun/bin/bun", "run", "scripts/llm-bridge.ts"],
-        logPaths: ["/tmp/bridge.log"], workingDir: "/Users/u/code/polybot")
+        label: "com.example.myapp.bridge", plistPath: "/p.plist",
+        program: ["/Users/u/.bun/bin/bun", "run", "scripts/worker.ts"],
+        logPaths: ["/tmp/bridge.log"], workingDir: "/Users/u/code/myapp")
 
     func testItemStates() {
         let procs = ProcTable.parse("""
-        45649 1 07:31 1.0 1000 /Users/u/.bun/bin/bun run scripts/llm-bridge.ts
+        45649 1 07:31 1.0 1000 /Users/u/.bun/bin/bun run scripts/worker.ts
         45650 45649 07:30 2.0 500 node child.js
         """)
         let ports: [Int32: Set<Int>] = [45650: [8787]]
@@ -171,9 +171,9 @@ final class LaunchAgentsTests: XCTestCase {
 
         let running = LaunchAgents.item(info: info, state: LaunchAgents.parsePrint(Self.running), procs: procs, ports: ports, now: now)
         XCTAssertEqual(running.status, .running)
-        XCTAssertEqual(running.name, "example.polybot.bridge")
-        XCTAssertEqual(running.detail, "bun run scripts/llm-bridge.ts")
-        XCTAssertEqual(running.group, "polybot")
+        XCTAssertEqual(running.name, "example.myapp.bridge")
+        XCTAssertEqual(running.detail, "bun run scripts/worker.ts")
+        XCTAssertEqual(running.group, "myapp")
         XCTAssertEqual(running.ports, [8787])
         XCTAssertEqual(running.cpu!, 3.0, accuracy: 0.001)
         XCTAssertEqual(running.memBytes, 1500 * 1024)
@@ -209,7 +209,7 @@ final class LaunchAgentsTests: XCTestCase {
     }
 
     func testDisplayName() {
-        XCTAssertEqual(LaunchAgents.displayName("com.fernandoeeu.polybot.llm-bridge"), "fernandoeeu.polybot.llm-bridge")
+        XCTAssertEqual(LaunchAgents.displayName("com.acme.myapp.worker"), "acme.myapp.worker")
         XCTAssertEqual(LaunchAgents.displayName("com.foo"), "com.foo")
     }
 }
@@ -297,13 +297,13 @@ final class DevProcsTests: XCTestCase {
       511   510 01:00:00   2.0  40000 node /Users/u/code/web/node_modules/.bin/vite dev
       512   511 01:00:00   1.0  10000 /Users/u/code/web/node_modules/@esbuild/darwin-arm64/bin/esbuild --service=0.21.5
       520   501 00:00:10   0.0    700 bun dev
-      530     1 07:31   0.0  29744 /Users/u/.bun/bin/bun run scripts/llm-bridge.ts
+      530     1 07:31   0.0  29744 /Users/u/.bun/bin/bun run scripts/worker.ts
       540     1 02-00:00:00   0.0   5000 node /Users/u/.local/share/mise/installs/node/24/lib/node_modules/chrome-devtools-axi/dist/bin/bridge.js
       541   540 02-00:00:00   0.0   5000 npm exec chrome-devtools-mcp@latest
       542   541 02-00:00:00   0.0   5000 node /Users/u/.npm/_npx/abc/node_modules/.bin/chrome-devtools-mcp
       543   542 02-00:00:00   0.0   5000 /Users/u/.local/share/mise/installs/node/24/bin/node /Users/u/.npm/_npx/abc/node_modules/chrome-devtools-mcp/build/watchdog/main.js
-      550     1 01:00:00   0.0   5000 npm exec grill-board
-      551   550 01:00:00   0.0   5000 node /Users/u/.npm/_npx/def/node_modules/.bin/grill-board
+      550     1 01:00:00   0.0   5000 npm exec some-tool
+      551   550 01:00:00   0.0   5000 node /Users/u/.npm/_npx/def/node_modules/.bin/some-tool
       560   501 01:00:00   5.0 400000 claude
       561   560 01:00:00   0.0  12000 /Users/u/.local/share/codex-cu-engine/cua_node/bin/node /x/cua-repl.mjs
       562   560 01:00:00   0.0  12000 bun /Users/u/code/my-mcp/server.ts
@@ -375,9 +375,9 @@ final class DevProcsTests: XCTestCase {
     }
 
     func testSummaryAndProjectName() {
-        let args = ["/Users/u/.bun/bin/bun", "run", "scripts/llm-bridge.ts"]
-        XCTAssertEqual(Summarize.command(args, cwd: "/Users/u/code/polybot"), "bun run scripts/llm-bridge.ts")
-        XCTAssertEqual(Summarize.projectName(cwd: "/Users/u/code/polybot", args: args, repoRoot: { _ in nil }), "polybot")
+        let args = ["/Users/u/.bun/bin/bun", "run", "scripts/worker.ts"]
+        XCTAssertEqual(Summarize.command(args, cwd: "/Users/u/code/myapp"), "bun run scripts/worker.ts")
+        XCTAssertEqual(Summarize.projectName(cwd: "/Users/u/code/myapp", args: args, repoRoot: { _ in nil }), "myapp")
         XCTAssertEqual(Summarize.projectName(cwd: "/r/mono/packages/backend", args: [], repoRoot: { _ in "/r/mono" }), "mono")
         XCTAssertEqual(Summarize.command(["node", "/Users/u/code/web/node_modules/.bin/vite", "dev"], cwd: nil), "node vite dev")
         XCTAssertEqual(Summarize.command(["node", "/r/app/node_modules/.bin/convex", "dev"], cwd: "/r/app"), "node convex dev")
