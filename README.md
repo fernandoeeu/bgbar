@@ -58,6 +58,8 @@ Em ⋯ › **Máquinas SSH…** dá para conectar máquinas Linux e ver o segund
 | Docker | Docker | `docker ps -a`, `docker inspect`, `docker stats --no-stream` |
 | Processos de dev | Processos de dev do usuário do ssh | `ps`, `ss -ltnp` (portas), `/proc/<pid>/cwd` e `fd` (diretório e logs) |
 
+A aba **Agentes Claude** também mostra as sessões do Claude Code de cada máquina: os transcripts recentes de `~/.claude/projects` são espelhados por ssh, de forma incremental, em `~/Library/Caches/BGBar/remote-claude/<máquina>/` e passam pelo mesmo scanner das sessões locais (o que sai da janela é apagado do espelho).
+
 Iniciar, parar, reiniciar, encerrar e ver logs funcionam também nos itens remotos (`systemctl --user`, `docker`, `kill`, `journalctl --user`). Clicar numa porta abre `http://<máquina>:<porta>`.
 
 Requisitos e limites:

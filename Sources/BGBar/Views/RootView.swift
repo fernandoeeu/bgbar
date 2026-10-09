@@ -116,11 +116,13 @@ private struct TabBar: View {
                 return (acc.0 + 1 + c.total, acc.1 || n.state == .failed || c.failed)
             }
         }
-        let all = claude.sessions.map { walk($0.agents) }
+        // Segue o filtro de máquina, como as outras abas. Sem subagentes, conta as sessões ativas.
+        let sessions = claude.sessions.filter { monitor.showsMachine($0.host) }
+        let all = sessions.map { walk($0.agents) }
         let total = all.reduce(0) { $0 + $1.total }
         let failed = all.contains { $0.failed }
-        let running = claude.runningCount
-        return (total == 0 ? "0" : "\(running)/\(total)", failed ? Status.failed.color : nil)
+        let running = sessions.reduce(0) { $0 + $1.runningAgents }
+        return (total == 0 ? "\(sessions.count)" : "\(running)/\(total)", failed ? Status.failed.color : nil)
     }
 }
 

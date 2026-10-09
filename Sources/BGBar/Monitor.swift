@@ -77,6 +77,7 @@ final class Monitor {
             }
         }
         hosts.forEach(pollRemote)
+        ClaudeAgentsStore.shared.setHosts(hosts)
     }
 
     /// Pede uma rodada já. Se uma estiver em andamento (com dados possivelmente
@@ -173,6 +174,7 @@ final class Monitor {
         guard !hosts.contains(host) else { return "\(host) já está na lista" }
         hosts.append(host)
         pollRemote(host)
+        ClaudeAgentsStore.shared.setHosts(hosts)
         return nil
     }
 
@@ -180,6 +182,7 @@ final class Monitor {
         remoteLoops.removeValue(forKey: host)?.cancel()
         hosts.removeAll { $0 == host }
         if machine == host || hosts.isEmpty { machine = "" }
+        ClaudeAgentsStore.shared.setHosts(hosts)
         remote[host] = nil
     }
 
@@ -316,6 +319,11 @@ final class Monitor {
     /// Itens visíveis da seção, ordenados: fixados, problemas, rodando, resto.
     /// Inclui linhas fantasma de fixados que não estão presentes.
     func items(_ kind: Kind) -> [Item] { items(kind, machine: machine) }
+
+    /// O filtro de máquina deixa passar algo desta máquina (nil = este Mac)?
+    func showsMachine(_ host: String?) -> Bool {
+        hosts.isEmpty || machine.isEmpty || host == (machine == Self.thisMac ? nil : machine)
+    }
 
     /// Itens do tipo na máquina pedida ("" = todas).
     private func scoped(_ kind: Kind, machine: String) -> [Item] {

@@ -211,6 +211,74 @@ final class RemoteTests: XCTestCase {
         XCTAssertEqual(Remote.logScript(dev, lines: 5), "tail -n 5 '/home/u/it'\\''s.log' 2>&1\n")
     }
 
+    // MARK: Espelho dos agentes Claude
+
+    func testMirrorListingRejectsUnexpectedPaths() throws {
+        let root = URL(fileURLWithPath: "/tmp/mirror")
+        let out = "@@bgbar:files\n"
+            + "m\t100\t1700000000.5\t./-home-u-app/aaa.jsonl\n"
+            + "d\t4096\t1700000001\t./-home-u-app/aaa/subagents\n"
+            + "f\t50\t1700000002\t./-home-u-app/aaa/subagents/agent-x.jsonl\n"
+            + "f\t20\t1700000003\t./-home-u-app/aaa/subagents/agent-x.meta.json\n"
+            + "f\t20\t1700000003\t./-home-u-app/aaa/subagents/../../../../etc/passwd\n"
+            + "m\t100\t1700000000\t./../../.ssh/authorized_keys.jsonl\n"
+            + "f\t20\t1700000003\t/etc/agent-x.jsonl\n"
+            + "f\t20\t1700000003\t./-home-u-app/aaa/subagents/other.txt\n"
+            + "m\tx\t1700000000\t./-home-u-app/bbb.jsonl\n"
+            + "@@bgbar:end\n"
+        let entries = try XCTUnwrap(RemoteClaudeMirror.parseListing(out, root: root))
+        XCTAssertEqual(entries.map(\.kind), [.main, .dir, .file, .file])
+        XCTAssertEqual(entries[0].local.path, "/tmp/mirror/-home-u-app/aaa.jsonl")
+        XCTAssertEqual(entries[0].mtime, Date(timeIntervalSince1970: 1_700_000_000.5))
+        XCTAssertEqual(entries[2].local.path, "/tmp/mirror/-home-u-app/aaa/subagents/agent-x.jsonl")
+        XCTAssertTrue(entries.allSatisfy { $0.local.path.hasPrefix("/tmp/mirror/") })
+        XCTAssertNil(RemoteClaudeMirror.parseListing("@@bgbar:files\n", root: root), "sem fim = incompleta")
+    }
+
+    func testMirrorFetchRoundTrip() {
+        let e = RemoteClaudeMirror.Entry(kind: .file, size: 10, mtime: Date(), path: "./p/s/subagents/agent-it's.jsonl",
+                                         local: URL(fileURLWithPath: "/tmp/x"))
+        let script = RemoteClaudeMirror.fetchScript([(e, .append(from: 120)), (e, .head), (e, .whole)])
+        XCTAssertTrue(script.contains("tail -c +121 './p/s/subagents/agent-it'\\''s.jsonl' | head -c \(RemoteClaudeMirror.perFileCap)"))
+        XCTAssertTrue(script.contains("printf '\\n@@bgbar-file:2\\n'"))
+        XCTAssertTrue(script.hasSuffix("printf '\\n@@bgbar-file:end\\n'\n"))
+
+        // O que o script imprime: conteúdo cru entre os marcadores.
+        let out = "\n@@bgbar-file:0\n{\"a\":1}\n{\"b\":2}\n{\"par"
+            + "\n@@bgbar-file:1\n"
+            + "\n@@bgbar-file:2\n{\"meta\":true}"
+            + "\n@@bgbar-file:end\n"
+        let bodies = RemoteClaudeMirror.parseFetched(out)
+        XCTAssertEqual(bodies[0], "{\"a\":1}\n{\"b\":2}\n{\"par")
+        XCTAssertEqual(RemoteClaudeMirror.completeLines(bodies[0]!), "{\"a\":1}\n{\"b\":2}\n", "linha parcial fica para a próxima rodada")
+        XCTAssertEqual(bodies[1], "")
+        XCTAssertEqual(bodies[2], "{\"meta\":true}")
+        // Saída cortada no meio do último arquivo: ele não conta.
+        let cut = RemoteClaudeMirror.parseFetched("\n@@bgbar-file:0\n{\"a\":1}\n\n@@bgbar-file:1\n{\"b\"")
+        XCTAssertEqual(cut, [0: "{\"a\":1}\n"])
+        XCTAssertEqual(RemoteClaudeMirror.completeLines("sem quebra"), "")
+    }
+
+    /// Espelho real dos agentes Claude (somente leitura no host). Só roda com BGBAR_SSH_HOST=<destino>.
+    func testLiveClaudeMirror() async throws {
+        let host = ProcessInfo.processInfo.environment["BGBAR_SSH_HOST"] ?? ""
+        try XCTSkipIf(host.isEmpty, "defina BGBAR_SSH_HOST=<destino ssh>")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bgbar-mirror-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mirror = RemoteClaudeMirror(host: host, root: root)
+        var round = await mirror.sync()
+        var rounds = 1
+        while round.backlog, rounds < 20 { round = await mirror.sync(); rounds += 1 }
+        let again = await mirror.sync()
+        let files = (FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?.allObjects as? [URL]) ?? []
+        print("espelho: \(rounds) rodada(s), \(files.count) arquivos, \(again.sessions.count) sessões")
+        for s in again.sessions {
+            print("SESSÃO \(s.projectName) host=\(s.host ?? "-") agentes=\(s.agents.count) rodando=\(s.agents.filter { $0.state == .running }.count) há \(Int(Date().timeIntervalSince(s.lastActivityAt)))s")
+        }
+        XCTAssertTrue(again.sessions.allSatisfy { $0.host == host })
+        XCTAssertEqual(again.sessions.map(\.id), round.sessions.map(\.id))
+    }
+
     /// Coleta real por ssh (somente leitura). Só roda com BGBAR_SSH_HOST=<destino>.
     func testLiveCollect() async throws {
         let host = ProcessInfo.processInfo.environment["BGBAR_SSH_HOST"] ?? ""
