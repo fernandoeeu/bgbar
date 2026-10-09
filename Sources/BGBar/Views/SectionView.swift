@@ -34,7 +34,7 @@ struct SectionView: View {
 
     @ViewBuilder
     private func content(_ items: [Item]) -> some View {
-        if kind == .docker && !monitor.dockerAvailable {
+        if kind == .docker && !monitor.dockerAvailable && items.isEmpty {
             EmptyState(symbol: "shippingbox.and.arrow.backward",
                        title: "Docker não está respondendo",
                        subtitle: "Abra o OrbStack ou o Docker Desktop; tento de novo sozinho.")

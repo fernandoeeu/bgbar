@@ -48,6 +48,28 @@ Ative "Abrir ao iniciar sessão" no menu ⋯ do app (usa `SMAppService`). També
 
 As ações usam as mesmas ferramentas: `launchctl` para agentes, `docker` para containers e sinais `TERM`/`KILL` para processos.
 
+## Máquinas Linux por SSH
+
+Em ⋯ › **Máquinas SSH…** dá para conectar máquinas Linux e ver o segundo plano delas nas mesmas abas, junto com o do Mac (cada item remoto mostra a máquina ao lado do nome). O destino é o que você passaria ao `ssh`: um alias do `~/.ssh/config`, `host` ou `usuário@host`.
+
+| No Mac | Na máquina Linux | Coleta |
+| --- | --- | --- |
+| LaunchAgents | Serviços systemd do usuário (`~/.config/systemd/user/*.service`) | `systemctl --user show` |
+| Docker | Docker | `docker ps -a`, `docker inspect`, `docker stats --no-stream` |
+| Processos de dev | Processos de dev do usuário do ssh | `ps`, `ss -ltnp` (portas), `/proc/<pid>/cwd` e `fd` (diretório e logs) |
+
+Iniciar, parar, reiniciar, encerrar e ver logs funcionam também nos itens remotos (`systemctl --user`, `docker`, `kill`, `journalctl --user`). Clicar numa porta abre `http://<máquina>:<porta>`.
+
+Requisitos e limites:
+
+- O app usa o `ssh` do sistema sem interação (`BatchMode`): a autenticação precisa funcionar por chave ou agente, e a máquina já tem que estar no `known_hosts`. Teste com `ssh -o BatchMode=yes <destino> true`.
+- Cada máquina é consultada a cada ~5 s, em uma única chamada sobre uma conexão compartilhada (`ControlMaster`, soquete em `~/.ssh/bgbar-*`).
+- Máquina fora do ar aparece como "off" no rodapé e os itens dela somem, sem notificação de queda.
+- Na máquina remota: Linux com `ps` (procps), `ss` e `find` (GNU). systemd e Docker são opcionais; o usuário do ssh precisa conseguir rodar `docker` sem sudo.
+- A lista fica em `UserDefaults` (`defaults read dev.fernandoeeu.bgbar remoteHosts`).
+
+Para testar a coleta contra uma máquina real (somente leitura): `BGBAR_SSH_HOST=<destino> swift test --filter RemoteTests/testLiveCollect`.
+
 ### Filtros de ruído
 
 Na seção de processos de dev entram só runtimes conhecidos (bun, node, deno, python, ruby, tsx, uvicorn, go, cargo etc.). Ficam de fora:

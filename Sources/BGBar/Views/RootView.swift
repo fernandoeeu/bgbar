@@ -30,6 +30,7 @@ enum Tab: String, CaseIterable, Identifiable {
 /// Tamanho fixo (UI.width × UI.bodyHeight + rodapé): trocar de aba ou abrir o detalhe não redimensiona a janela.
 struct RootView: View {
     @State private var selected: Item?
+    @State private var showHosts = false
     @AppStorage("selectedTab") private var tab: Tab = .agent
 
     var body: some View {
@@ -37,6 +38,8 @@ struct RootView: View {
             Group {
                 if let selected {
                     DetailView(initial: selected) { self.selected = nil }
+                } else if showHosts {
+                    HostsView { showHosts = false }
                 } else {
                     listPage
                 }
@@ -53,7 +56,7 @@ struct RootView: View {
 
     private var listPage: some View {
         VStack(spacing: 0) {
-            HeaderView()
+            HeaderView { showHosts = true }
             TabBar(tab: $tab)
             Divider().opacity(0.6)
             ScrollView {
@@ -86,7 +89,9 @@ private struct TabBar: View {
         HStack(spacing: 4) {
             ForEach(Array(Tab.allCases.enumerated()), id: \.element) { idx, t in
                 let s = stats(t)
-                TabButton(tab: t, count: s.count, problem: s.problem, selected: tab == t) { tab = t }
+                // Com máquinas Linux na lista, a aba de agents também traz serviços systemd.
+                let title = t == .agent && !monitor.hosts.isEmpty ? "Serviços" : t.title
+                TabButton(tab: t, title: title, count: s.count, problem: s.problem, selected: tab == t) { tab = t }
                     .keyboardShortcut(KeyEquivalent(Character(String(idx + 1))), modifiers: .command)
             }
         }
@@ -101,7 +106,7 @@ private struct TabBar: View {
             let up = items.filter { $0.status.isUp || $0.status == .unhealthy }.count
             let health = monitor.health(kind)
             let bad = health == .ok ? nil : health.color
-            if kind == .docker && !monitor.dockerAvailable { return ("off", nil) }
+            if kind == .docker && !monitor.dockerAvailable && items.isEmpty { return ("off", nil) }
             return (items.isEmpty ? "0" : "\(up)/\(items.count)", bad)
         }
         func walk(_ nodes: [ClaudeAgentNode]) -> (total: Int, failed: Bool) {
@@ -120,6 +125,7 @@ private struct TabBar: View {
 
 private struct TabButton: View {
     let tab: Tab
+    let title: String
     let count: String
     let problem: Color?
     let selected: Bool
@@ -143,7 +149,7 @@ private struct TabButton: View {
                         .fill(problem ?? .clear)
                         .frame(width: 5, height: 5)
                 }
-                Text(tab.title)
+                Text(title)
                     .font(.system(size: 10.5, weight: selected ? .semibold : .medium))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
@@ -163,7 +169,7 @@ private struct TabButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
-        .help(problem != nil ? "\(tab.title): há itens com problema" : tab.title)
+        .help(problem != nil ? "\(title): há itens com problema" : title)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
@@ -171,6 +177,7 @@ private struct TabButton: View {
 // MARK: - Cabeçalho
 
 private struct HeaderView: View {
+    let onHosts: () -> Void
     private let monitor = Monitor.shared
 
     var body: some View {
@@ -197,7 +204,7 @@ private struct HeaderView: View {
                 monitor.refreshNow()
             }
 
-            MoreMenu()
+            MoreMenu(onHosts: onHosts)
         }
         .padding(.horizontal, UI.pad + 2)
         .padding(.vertical, 10)
@@ -222,6 +229,7 @@ private struct HeaderView: View {
 }
 
 private struct MoreMenu: View {
+    let onHosts: () -> Void
     @Bindable private var monitor = Monitor.shared
     @AppStorage(DockerFilter.showStoppedKey) private var showStopped = false
     /// Lido ao abrir o menu (e após mudar), não a cada redesenho.
@@ -243,6 +251,8 @@ private struct MoreMenu: View {
             if loginStatus == .requiresApproval {
                 Button("Aprovar em Ajustes do Sistema…") { SMAppService.openSystemSettingsLoginItems() }
             }
+            Divider()
+            Button("Máquinas SSH…", action: onHosts)
             Divider()
             Button("Sair do BGBar") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
@@ -339,6 +349,12 @@ private struct FooterView: View {
                 Text("· Docker off")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)
+            }
+            if !monitor.offlineHosts.isEmpty {
+                Text("· \(monitor.offlineHosts.joined(separator: ", ")) off")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
             Spacer()
             Button {

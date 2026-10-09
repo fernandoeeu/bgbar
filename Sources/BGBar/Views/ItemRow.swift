@@ -36,6 +36,15 @@ struct ItemRow: View {
                         .italic(item.isGhost)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    if let host = item.host {
+                        Label(host, systemImage: "network")
+                            .labelStyle(.titleAndIcon)
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .help("Rodando em \(host) (ssh)")
+                    }
                     if pinned {
                         Image(systemName: "pin.fill")
                             .font(.system(size: 8.5))
@@ -102,7 +111,7 @@ struct ItemRow: View {
             if let mem = item.memBytes, item.status.isUp || item.status == .unhealthy {
                 LiveChip(text: Fmt.memory(mem), symbol: "memorychip", minWidth: 40)
             }
-            ForEach(item.ports.prefix(3), id: \.self) { PortChip(port: $0) }
+            ForEach(item.ports.prefix(3), id: \.self) { PortChip(port: $0, host: item.host) }
             if item.ports.count > 3 {
                 Chip(text: "+\(item.ports.count - 3)")
             }
@@ -327,7 +336,7 @@ struct ItemMenu: View {
         if !item.ports.isEmpty {
             Menu("Abrir porta") {
                 ForEach(item.ports, id: \.self) { p in
-                    Button("localhost:\(String(p))") { Actions.openPort(p) }
+                    Button("\(Actions.portHost(item.host)):\(String(p))") { Actions.openPort(p, host: item.host) }
                 }
             }
         }
