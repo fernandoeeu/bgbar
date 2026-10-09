@@ -46,7 +46,7 @@ final class Monitor {
 
     /// Popover aberto. Fechado, só o ícone da barra e as notificações de queda dependem da
     /// coleta, então os ciclos desaceleram (`idle…`); ao abrir, recomeçam coletando já.
-    @ObservationIgnored private(set) var visible = false
+    private(set) var visible = false
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var remoteLoops: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var previous: [String: Item] = [:]

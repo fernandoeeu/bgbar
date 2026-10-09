@@ -36,7 +36,11 @@ struct RootView: View {
     var body: some View {
         VStack(spacing: 0) {
             Group {
-                if let selected {
+                if !Monitor.shared.visible {
+                    // Fechado, a janela continua viva: sem isto as listas e os relógios de 1 s
+                    // seguiriam sendo recalculados fora da tela.
+                    Color.clear
+                } else if let selected {
                     DetailView(initial: selected) { self.selected = nil }
                 } else if showHosts {
                     HostsView { showHosts = false }
@@ -381,16 +385,12 @@ private struct FooterView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(monitor.isRefreshing ? Color.accentColor : Color.secondary.opacity(0.5))
-                        .frame(width: 5, height: 5)
-                    Text(updatedText(now: ctx.date))
-                        .monospacedDigit()
-                        .lineLimit(1)
+            Group {
+                if monitor.visible {
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in status(now: ctx.date) }
+                } else {
+                    status(now: Date()) // popover fechado: sem relógio
                 }
-                .frame(minWidth: 130, alignment: .leading)
             }
             .font(.system(size: 10.5))
             .foregroundStyle(.secondary)
@@ -418,6 +418,18 @@ private struct FooterView: View {
         }
         .padding(.horizontal, UI.pad + 2)
         .padding(.vertical, 7)
+    }
+
+    private func status(now: Date) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(monitor.isRefreshing ? Color.accentColor : Color.secondary.opacity(0.5))
+                .frame(width: 5, height: 5)
+            Text(updatedText(now: now))
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .frame(minWidth: 130, alignment: .leading)
     }
 
     private func updatedText(now: Date) -> String {
