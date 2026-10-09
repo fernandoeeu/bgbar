@@ -52,6 +52,7 @@ struct RootView: View {
             FooterView()
         }
         .frame(width: UI.width)
+        .background(PopoverVisibility { Monitor.shared.setVisible($0) })
     }
 
     private var listPage: some View {
@@ -425,5 +426,42 @@ private struct FooterView: View {
         if s < 2 { return "Atualizado agora" }
         if s < 60 { return "Atualizado há \(s) s" }
         return "Atualizado há \(s / 60) min"
+    }
+}
+
+/// Avisa quando a janela do popover aparece ou some. `onAppear`/`onDisappear` não servem:
+/// o MenuBarExtra mantém a janela (e a view) viva depois de fechar.
+private struct PopoverVisibility: NSViewRepresentable {
+    let onChange: (Bool) -> Void
+
+    func makeNSView(context: Context) -> Probe {
+        let view = Probe()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateNSView(_ view: Probe, context: Context) {}
+
+    final class Probe: NSView {
+        var onChange: ((Bool) -> Void)?
+        private var observer: NSObjectProtocol?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            observer = nil
+            if let window {
+                observer = NotificationCenter.default.addObserver(
+                    forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.report() }
+                }
+            }
+            report()
+        }
+
+        private func report() {
+            onChange?(window?.occlusionState.contains(.visible) ?? false)
+        }
     }
 }

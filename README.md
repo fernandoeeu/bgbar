@@ -65,7 +65,7 @@ Iniciar, parar, reiniciar, encerrar e ver logs funcionam também nos itens remot
 Requisitos e limites:
 
 - O app usa o `ssh` do sistema sem interação (`BatchMode`): a autenticação precisa funcionar por chave ou agente, e a máquina já tem que estar no `known_hosts`. Teste com `ssh -o BatchMode=yes <destino> true`.
-- Cada máquina é consultada a cada ~5 s, em uma única chamada sobre uma conexão compartilhada (`ControlMaster`, soquete em `~/.ssh/bgbar-*`).
+- Cada máquina é consultada a cada ~5 s com o popover aberto e a cada ~30 s com ele fechado, em uma única chamada sobre uma conexão compartilhada (`ControlMaster`, soquete em `~/.ssh/bgbar-*`).
 - Máquina fora do ar aparece como "off" no rodapé e os itens dela somem, sem notificação de queda.
 - Na máquina remota: Linux com `ps` (procps), `ss` e `find` (GNU). systemd e Docker são opcionais; o usuário do ssh precisa conseguir rodar `docker` sem sudo.
 - A lista fica em `UserDefaults` (`defaults read dev.fernandoeeu.bgbar remoteHosts`).
